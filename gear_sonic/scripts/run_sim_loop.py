@@ -4,6 +4,8 @@ Parses a YAML-based WBC config via tyro CLI, instantiates the G1 robot model,
 and launches the simulator (optionally with offscreen image publishing).
 """
 
+import math
+import signal
 from typing import Dict
 
 import tyro
@@ -34,11 +36,30 @@ class SimWrapper:
 
 
 def main(config: ArgsConfig):
+    # Service/shell termination must follow the same worker/IPC cleanup as Ctrl-C.
+    def terminate(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, terminate)
+    if not math.isfinite(config.render_fps) or config.render_fps <= 0:
+        raise ValueError("render_fps must be finite and positive")
+    if not 1 <= config.camera_port <= 65535 or not 1 <= config.comparison_camera_port <= 65535:
+        raise ValueError("Camera ports must be between 1 and 65535")
+    if config.render_backend == "both" and config.camera_port == config.comparison_camera_port:
+        raise ValueError("Both renderers need distinct camera ports")
+    if config.render_backend != "mujoco":
+        config.enable_image_publish = True
     wbc_config = config.load_wbc_yaml()
     # NOTE: we will override the interface to local if it is not specified
     wbc_config["ENV_NAME"] = config.env_name
 
-    if config.enable_image_publish:
+    wbc_config.update(
+        RENDER_BACKEND=config.render_backend,
+        ISAAC_HEADLESS=config.isaac_headless,
+        RENDER_FPS=config.render_fps,
+        COMPARISON_CAMERA_PORT=config.comparison_camera_port,
+    )
+    if config.enable_image_publish and config.render_backend == "mujoco":
         assert (
             config.enable_offscreen
         ), "enable_offscreen must be True when enable_image_publish is True"
@@ -53,7 +74,7 @@ def main(config: ArgsConfig):
         offscreen=wbc_config.get("ENABLE_OFFSCREEN", False),
         enable_image_publish=config.enable_image_publish,
     )
-    # Start simulator as independent process
+    # Physics stays here; cameras run in a fresh, independent interpreter.
     SimulatorFactory.start_simulator(
         sim_wrapper.sim,
         as_thread=False,

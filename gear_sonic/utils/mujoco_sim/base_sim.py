@@ -52,7 +52,7 @@ class DefaultEnv:
         self.torque_limit = np.array(self.robot.MOTOR_EFFORT_LIMIT_LIST)
         self.camera_configs = camera_configs
 
-        if not camera_configs and offscreen and enable_image_publish:
+        if not camera_configs and enable_image_publish:
             self.camera_configs = {
                 "ego_view": {"height": 480, "width": 640, "mjcf_name": "head_camera"},
             }
@@ -65,28 +65,30 @@ class DefaultEnv:
         self.last_reward = 0
 
         self.offscreen = offscreen
-        if self.offscreen:
+        self.isolated_rendering = enable_image_publish
+        if self.offscreen and not self.isolated_rendering:
             self.init_renderers()
         self.image_dt = self.config.get("IMAGE_DT", 0.033333)
         self.image_publish_process = None
 
     def start_image_publish_subprocess(self, start_method: str = "spawn", camera_port: int = 5555):
-        from gear_sonic.utils.mujoco_sim.image_publish_utils import ImagePublishProcess
+        from gear_sonic.utils.mujoco_sim.state_render import StateRenderProcess
 
         if len(self.camera_configs) == 0:
             print(
                 "Warning: No camera configs provided, image publishing subprocess will not be started"
             )
             return
-        start_method = self.config.get("MP_START_METHOD", "spawn")
-        self.image_publish_process = ImagePublishProcess(
+        # Always exec a fresh interpreter: never fork initialized DDS/GL/native libraries.
+        self.image_publish_process = StateRenderProcess(
+            model=self.mj_model,
             camera_configs=self.camera_configs,
-            image_dt=self.image_dt,
-            zmq_port=camera_port,
-            start_method=start_method,
-            verbose=self.config.get("verbose", False),
+            backend=self.config.get("RENDER_BACKEND", "mujoco"),
+            fps=self.config.get("RENDER_FPS", 30.0),
+            camera_port=camera_port,
+            comparison_camera_port=self.config.get("COMPARISON_CAMERA_PORT", 5556),
+            headless=self.config.get("ISAAC_HEADLESS", False),
         )
-        self.image_publish_process.start_process()
 
     def _get_dof_indices_by_class(self):
         with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".xml") as f:
@@ -389,6 +391,7 @@ class DefaultEnv:
     def sim_step(self):
         self.obs = self.prepare_obs()
         self.unitree_bridge.PublishLowState(self.obs)
+        self.lowstate_published_at = time.monotonic()
         if self.unitree_bridge.joystick:
             self.unitree_bridge.PublishWirelessController()
         if self.elastic_band:
@@ -547,6 +550,7 @@ class BaseSimulator:
         self.image_dt = self.config.get("IMAGE_DT", 0.033333)
         self.viewer_dt = self.config.get("VIEWER_DT", 0.02)
         self._running = True
+        self._closed = False
 
         self.robot = Robot(self.config)
 
@@ -599,6 +603,13 @@ class BaseSimulator:
         """Main simulation loop"""
         sim_cnt = 0
         ts = time.time()
+        report_start = time.monotonic()
+        report_count = 0
+        last_step = report_start
+        max_gap = 0.0
+        last_lowstate = None
+        max_lowstate_gap = 0.0
+        step_deadline = report_start
 
         try:
             while self._running and (
@@ -606,8 +617,14 @@ class BaseSimulator:
                 or (self.sim_env.viewer is None)
             ):
                 step_start = time.monotonic()
+                max_gap = max(max_gap, step_start - last_step)
+                last_step = step_start
 
                 self.sim_env.sim_step()
+                published_at = self.sim_env.lowstate_published_at
+                if last_lowstate is not None:
+                    max_lowstate_gap = max(max_lowstate_gap, published_at - last_lowstate)
+                last_lowstate = published_at
                 now = time.time()
                 if now - ts > 1 / 10.0 and self.redis_client is not None:
                     head_pose = self.sim_env.get_head_pose()
@@ -621,12 +638,30 @@ class BaseSimulator:
                 if sim_cnt % int(self.reward_dt / self.sim_dt) == 0:
                     self.sim_env.update_reward()
 
-                if sim_cnt % int(self.image_dt / self.sim_dt) == 0:
+                if self.sim_env.image_publish_process is not None:
+                    self.sim_env.image_publish_process.publish(self.sim_env.mj_data)
+                elif (
+                    self.sim_env.offscreen
+                    and not self.sim_env.isolated_rendering
+                    and sim_cnt % max(1, int(self.image_dt / self.sim_dt)) == 0
+                ):
                     self.sim_env.update_render_caches()
 
-                # Simple rate limiter (replaces ROS rate)
-                elapsed = time.monotonic() - step_start
-                sleep_time = self.sim_dt - elapsed
+                if step_start - report_start >= 5.0:
+                    if self.config.get("verbose_timing", False):
+                        print(f"[Physics/DDS] {report_count / (step_start - report_start):.1f} Hz; "
+                              f"max loop interval {max_gap * 1000:.2f} ms; "
+                              f"max LowState publish interval {max_lowstate_gap * 1000:.2f} ms", flush=True)
+                    if self.sim_env.image_publish_process is not None:
+                        self.sim_env.image_publish_process.check_health()
+                    report_start, report_count, max_gap = step_start, 0, 0.0
+                    max_lowstate_gap = 0.0
+                report_count += 1
+
+                # Accumulate deadlines so sleep overshoot and occasional viewer
+                # updates do not permanently lower the requested physics rate.
+                step_deadline += self.sim_dt
+                sleep_time = step_deadline - time.monotonic()
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
@@ -643,6 +678,9 @@ class BaseSimulator:
         self.sim_env.reset()
 
     def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         self._running = False
         try:
             if self.sim_env.image_publish_process is not None:

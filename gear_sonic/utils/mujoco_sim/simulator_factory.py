@@ -80,11 +80,13 @@ class SimulatorFactory:
         else:
             try:
                 if enable_image_publish:
-                    simulator.start_image_publish_subprocess(
-                        start_method=mp_start_method,
-                        camera_port=camera_port,
-                    )
-                    time.sleep(1)
+                    try:
+                        simulator.start_image_publish_subprocess(
+                            start_method=mp_start_method,
+                            camera_port=camera_port,
+                        )
+                    except Exception as exc:
+                        print(f"[Render] Failed to launch worker: {exc}; MuJoCo/DDS continue.", flush=True)
                 simulator.start()
             except KeyboardInterrupt:
                 print("+++++Simulator interrupted by user.")

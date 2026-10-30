@@ -93,6 +93,7 @@ Documentation
    :caption: Tutorials
 
    tutorials/keyboard
+   tutorials/isaac_rendering
    tutorials/gamepad
    tutorials/zmq
    tutorials/manager

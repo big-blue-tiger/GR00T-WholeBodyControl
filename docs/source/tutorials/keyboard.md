@@ -37,6 +37,57 @@ python gear_sonic/scripts/run_sim_loop.py
 bash deploy.sh --input-type keyboard sim
 ```
 
+**MuJoCo dynamics with Isaac Sim 5.0 camera rendering:**
+
+Use the existing `gr00t-sim` conda environment (digits **00**); see
+[installation instructions](../getting_started/installation_deploy.md#isaac-renderer).
+Terminal 2 and all keyboard controls below remain the same.
+
+```bash
+# Terminal 1, repository root: original MuJoCo window and keyboard workflow
+conda activate gr00t-sim
+python gear_sonic/scripts/run_sim_loop.py
+
+# For Isaac modes, after accepting NVIDIA's EULA (see installation instructions)
+export OMNI_KIT_ACCEPT_EULA=YES
+
+# Isaac RTX camera and image preview; automatically publish on port 5555
+python gear_sonic/scripts/run_sim_loop.py --render-backend isaac
+
+# Hide only the Isaac image preview; the MuJoCo control window remains available
+python gear_sonic/scripts/run_sim_loop.py --render-backend isaac --isaac-headless
+
+# Compare the same snapshot: Isaac on 5555, MuJoCo on 5556
+python gear_sonic/scripts/run_sim_loop.py --render-backend both
+```
+
+Run one simulator command at a time. `--render-fps 30` sets the camera rate cap;
+actual performance depends on the GPU. MuJoCo continues its 200 Hz dynamics/DDS
+loop while the camera worker initializes, renders, or stops. Press **`9`** in the
+**MuJoCo** window to release the suspension; the Isaac window only displays the
+visual puppet. The Isaac window previews the exact published RTX image; Kit runs
+offscreen and does not expose a scene editor. Closing the preview leaves MuJoCo
+running and reports the worker exit. Focus the preview and press `Q` or `Esc` to
+close it.
+
+```bash
+# Separate viewer terminals, using the existing camera client unchanged
+python gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5555
+python gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5556
+
+# Optional camera publishing with the MuJoCo-only backend
+python gear_sonic/scripts/run_sim_loop.py --enable-offscreen --enable-image-publish
+```
+
+`--camera-port` selects the main stream; `--comparison-camera-port` selects the
+MuJoCo stream in `both` mode. Each stream contains RGB `images["ego_view"]`
+at 640×480 and the state sampling wall time in `timestamps["ego_view"]`.
+Both streams share the sampling timestamp in comparison mode. The existing
+viewer, exporter and VLA camera subscriber use the same image protocol.
+This change does not launch N1.7 inference or `launch_inference.py`.
+
+For architecture and validation commands, see [independent rendering](isaac_rendering.md).
+
 **Real Robot:**
 
 ```bash

@@ -334,13 +334,25 @@ class SimLoopConfig(BaseConfig):
     """Config for running the simulation loop."""
 
     mp_start_method: str = "spawn"
-    """Multiprocessing start method"""
+    """Legacy multiprocessing option; camera workers always exec the current Python."""
 
     enable_image_publish: bool = False
     """Enable image publishing in simulation"""
 
     camera_port: int = 5555
     """Camera port for image publishing"""
+
+    render_backend: Literal["mujoco", "isaac", "both"] = "mujoco"
+    """Camera renderer. Isaac/both automatically publish images in a separate process."""
+
+    isaac_headless: bool = False
+    """Hide the Isaac RTX image preview while continuing offscreen rendering."""
+
+    render_fps: float = 30.0
+    """Maximum camera frame rate (physics remains at sim_frequency)."""
+
+    comparison_camera_port: int = 5556
+    """MuJoCo image port in both mode; Isaac uses camera_port."""
 
     verbose: bool = False
     """Verbose output, override the base config verbose"""

@@ -1,0 +1,36 @@
+[package]
+title = "Isaac Sim ego_view"
+version = "5.0.0"
+description = "Camera rendering for the MuJoCo-driven G1 visual puppet"
+
+[dependencies]
+"isaacsim.core.version" = {}
+"omni.kit.loop-isaac" = {}
+"omni.kit.uiapp" = {}
+"omni.kit.viewport.window" = {}
+"omni.kit.viewport.utility" = {}
+"omni.replicator.core" = {}
+
+[settings]
+app.name = "GearSonicIsaacCamera"
+app.version = "5.0.0"
+app.window.title = "Isaac Sim - ego_view"
+app.vulkan = true
+app.settings.persistent = false
+app.settings.fabricDefaultStageFrameHistoryCount = 3
+app.asyncRendering = false
+app.asyncRenderingLowLatency = false
+app.runLoopsGlobal.syncToPresent = false
+app.runLoops.main.rateLimitEnabled = false
+app.renderer.skipWhileMinimized = false
+app.renderer.sleepMsOnFocus = 0
+app.renderer.sleepMsOutOfFocus = 0
+rtx.ecoMode.enabled = false
+omni.replicator.asyncRendering = false
+renderer.asyncInit = true
+renderer.gpuEnumeration.glInterop.enabled = false
+exts."omni.kit.renderer.core".present.enabled = false
+
+[settings.persistent]
+# Same startup default as NVIDIA's isaacsim.exp.base.kit (single-GPU renderer).
+renderer.startupMessageDisplayed = true
