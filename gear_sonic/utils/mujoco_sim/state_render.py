@@ -1,6 +1,6 @@
 """Nonblocking, latest-state IPC and lifecycle for the camera process.
 
-Only qpos crosses this boundary. No renderer or Isaac module is imported here.
+qpos and mocap poses cross atomically. No renderer or Isaac is imported here.
 """
 
 import json
@@ -20,7 +20,8 @@ import zmq
 
 class StateRenderProcess:
     def __init__(self, model, camera_configs, backend, fps, camera_port,
-                 comparison_camera_port, headless):
+                 comparison_camera_port, headless, isaac_scene=None,
+                 isaac_object_asset=None):
         self.process = None
         self.context = None
         self.socket = None
@@ -39,6 +40,9 @@ class StateRenderProcess:
                 fps=fps, camera_port=camera_port,
                 comparison_camera_port=comparison_camera_port, headless=headless,
                 camera_configs=camera_configs, parent_pid=os.getpid(),
+                isaac_scene=isaac_scene,
+                isaac_object_asset=(str(Path(isaac_object_asset).resolve())
+                                    if isaac_object_asset is not None else None),
             )
             config_path = directory / "render.json"
             config_path.write_text(json.dumps(options))
@@ -47,6 +51,7 @@ class StateRenderProcess:
             self.socket.setsockopt(zmq.LINGER, 0)
             self.socket.setsockopt(zmq.CONFLATE, 1)
             self.socket.bind(self.endpoint)
+            print(f"[Render] Snapshot config: {config_path}", flush=True)
             environment = os.environ.copy()
             if backend in ("isaac", "both"):
                 # Set PRIME variables before interpreter/native loader startup.
@@ -71,6 +76,8 @@ class StateRenderProcess:
         packet = msgpack.packb(dict(
             sequence=self.sequence, sim_time=float(data.time), timestamp=time.time(),
             qpos=np.asarray(data.qpos, dtype="<f8").tobytes(),
+            mocap_pos=np.asarray(data.mocap_pos, dtype="<f8").tobytes(),
+            mocap_quat=np.asarray(data.mocap_quat, dtype="<f8").tobytes(),
         ), use_bin_type=True)
         try:
             self.socket.send(packet, flags=zmq.NOBLOCK)

@@ -351,8 +351,22 @@ class SimLoopConfig(BaseConfig):
     render_fps: float = 30.0
     """Maximum camera frame rate (physics remains at sim_frequency)."""
 
-    comparison_camera_port: int = 5556
+    comparison_camera_port: int = 5559
     """MuJoCo image port in both mode; Isaac uses camera_port."""
+
+    initial_pose_file: Optional[str] = None
+    scene_config: str = "gear_sonic/config/grail/apple_2.yaml"
+    """GRAIL scene parameters: table, object orientation, contacts, robot and rendering."""
+
+    dataset_dir: Optional[str] = None
+    object_key: str = "pickup_table__alcohol_4__000"
+    """GRAIL object asset basename; selects its USD, BPS and prepared cache."""
+
+    grail_seed: int = 42
+    grail_cache_dir: str = "/tmp/sonic-grail-assets"
+    grail_observation_endpoint: str = "tcp://127.0.0.1:5560"
+    grail_action_endpoint: str = "tcp://127.0.0.1:5561"
+    grail_log: Optional[str] = None
 
     verbose: bool = False
     """Verbose output, override the base config verbose"""

@@ -11,6 +11,8 @@ import mujoco
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
+from .scene_visual import SceneVisual, add_gaussian_scene
+
 
 ROBOT_SUBTREE = "/g1_29dof_with_hand_rev_1_0"
 
@@ -39,7 +41,7 @@ class VisualPuppet:
         self.stage = stage
         self.model = model
         if asset_path is None:
-            asset_path = Path(__file__).resolve().parents[2] / "data/robots/g1/g1_43dof.usd"
+            asset_path = Path(__file__).resolve().parents[2] / "data/robots/g1/g1_43dof_s3.usda"
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         root = stage.DefinePrim("/Robot", "Xform")
@@ -51,7 +53,13 @@ class VisualPuppet:
         prims = list(Usd.PrimRange(root))
         links = {p.GetName(): p for p in root.GetChildren() if p.IsA(UsdGeom.Xform)}
         self.body_paths = {}
+        robot_root = model.body("pelvis").id
         for index in range(1, model.nbody):
+            ancestor = index
+            while ancestor and ancestor != robot_root:
+                ancestor = model.body_parentid[ancestor]
+            if ancestor != robot_root:
+                continue
             name = model.body(index).name
             if name not in links:
                 raise ValueError(f"MuJoCo body {name!r} has no USD link")
@@ -95,7 +103,11 @@ class VisualPuppet:
                 UsdPhysics.RigidBodyAPI(prim).CreateRigidBodyEnabledAttr(False)
             if prim.HasAPI(UsdPhysics.CollisionAPI):
                 UsdPhysics.CollisionAPI(prim).CreateCollisionEnabledAttr(False)
-                UsdGeom.Imageable(prim).MakeInvisible()
+                # GRAIL shares finger /visuals meshes with collision geometry.
+                # Disable their physics without hiding the visible fingers.
+                # Only dedicated /collisions* shapes are rendering helpers.
+                if prim.GetName().startswith("collisions"):
+                    UsdGeom.Imageable(prim).MakeInvisible()
             if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
                 prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
             if prim.IsA(UsdPhysics.Joint):
@@ -161,8 +173,10 @@ class VisualPuppet:
 
 
 class IsaacVisual:
-    def __init__(self, app, model, texture_dir):
+    def __init__(self, app, model, texture_dir, scene_config=None,
+                 object_asset_path=None):
         import omni.replicator.core as rep
+        from omni.kit.viewport.utility import get_active_viewport_window
         import omni.timeline
         import omni.usd
 
@@ -175,6 +189,13 @@ class IsaacVisual:
         omni.usd.get_context().new_stage()
         stage = omni.usd.get_context().get_stage()
         self.puppet = VisualPuppet(stage, model)
+        show_colliders = True
+        if scene_config and scene_config.get("enabled", False):
+            for name, value in add_gaussian_scene(stage, scene_config).items():
+                app.set_setting("/" + name.replace(":", "/"), value)
+            show_colliders = scene_config.get("show_colliders", False)
+        self.scene = SceneVisual(stage, model, show_colliders=show_colliders,
+                                 object_asset_path=object_asset_path)
         floor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
         if floor_id < 0 or model.geom_type[floor_id] != mujoco.mjtGeom.mjGEOM_PLANE:
             raise ValueError("Expected the current G1 floor plane")
@@ -184,6 +205,8 @@ class IsaacVisual:
         floor.CreateFaceVertexCountsAttr([4])
         floor.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
         floor.CreateDisplayColorAttr([Gf.Vec3f(0.2, 0.3, 0.4)])
+        if not show_colliders:
+            floor.MakeInvisible()
         self._ground_material(floor, model, floor_id, texture_dir)
         initial = mujoco.MjData(model)
         mujoco.mj_forward(model, initial)
@@ -197,9 +220,18 @@ class IsaacVisual:
         self.product_path = self.product.path
         self.rgb = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb.attach([self.product_path])
-        # Replicator's explicit capture wait below synchronizes this product.
-        # Global Hydra waitIdle/render-complete overrides can stall Kit's GUI
-        # swapchain. Preview and stream use the same captured RGB array.
+        # Creating the stage re-enables Kit's default viewport after the app
+        # disabled it. It renders an unused camera over the entire 3DGS room.
+        # Only the dedicated /EgoCamera render product is needed, including
+        # for the OpenCV preview. Destroy the unused window: merely disabling
+        # updates is undone by its pending dock/focus callbacks during warm-up.
+        viewport_window = get_active_viewport_window()
+        if viewport_window is not None:
+            viewport_window.destroy()
+        # With the unused viewport disabled and presentation off, Hydra can
+        # finish this frame before annotator readback without a GUI swapchain
+        # wait. Keep Replicator's current-state capture barrier below as well.
+        app.set_setting("/app/hydraEngine/waitIdle", True)
         # Isaac 5.0's throttling extension enables eco mode on STOP/PAUSE.
         # This puppet deliberately keeps time stopped, but must still render.
         app.set_setting("/rtx/ecoMode/enabled", False)
@@ -261,6 +293,7 @@ class IsaacVisual:
     def render(self, data, *, warming_up=False):
         self.app.set_setting("/rtx/ecoMode/enabled", False)
         self.puppet.update(data)
+        self.scene.update(data)
         # Synchronous capture prevents annotator data from belonging to the prior pose.
         # Timeline is stopped and delta_time=0: no Isaac physics is advanced.
         self.rep.orchestrator.step(rt_subframes=1, delta_time=0.0, pause_timeline=True)

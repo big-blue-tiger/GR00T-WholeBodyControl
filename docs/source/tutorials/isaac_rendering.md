@@ -2,7 +2,7 @@
 
 `run_sim_loop.py` owns the only dynamics loop. At each MuJoCo step it publishes
 SONIC LowState through DDS and sends a single nonblocking ZMQ IPC message with
-full `qpos`, simulation time, wall-clock sampling time and sequence number.
+full `qpos`, mocap poses, simulation time, wall-clock sampling time and sequence number.
 Each run creates its own temporary IPC directory and compiled model snapshot.
 
 The camera worker is a fresh Python interpreter in the same environment.
@@ -12,14 +12,30 @@ the worker also drains transport bursts before selecting its next snapshot.
 It skips duplicate sequences and never republishes a frame without new state.
 Rendering, JPEG encoding and image ZMQ sends all happen in this worker.
 
-Isaac references only `/g1_29dof_with_hand_rev_1_0` from the local `g1_43dof.usd`.
+Isaac references only `/g1_29dof_with_hand_rev_1_0` from the local
+`gear_sonic/data/robots/g1/g1_43dof_s3.usda`, copied byte for byte from the
+GRAIL `robocasa_carry_table` training robot (`G1_43DOF_CFG`). The asset embeds
+its meshes and is tracked with Git LFS; run `git lfs pull` after cloning.
+See the [asset provenance](../../../gear_sonic/data/robots/g1/GRAIL_ASSET.md).
 It excludes the asset's room and physics scene, disables rigid bodies, collisions,
 articulations and joints, and binds local preview materials instead of remote MDL.
-All 44 MuJoCo bodies use world transforms from forward kinematics; nine additional
+Disabling collision preserves the ten finger `/visuals` meshes that also carry
+collision APIs; only dedicated `/collisions*` geometry is hidden. All sixteen
+palm/finger visual meshes remain visible. All 44 MuJoCo bodies use world transforms
+from forward kinematics; nine additional
 USD links follow fixed-joint frames. Finger links are included. The ground uses
 the MuJoCo floor's world pose and its compiled checker texture and repetition
 settings. Local preview materials and lighting can produce different colors and
 reflections from MuJoCo; comparison checks geometry and projection.
+
+The apple carry configuration now also references the local NuRec 3DGS
+`839951.usdz`. Its rigid placement keeps the source scale at 1, registers the
+tea-room floor to z=0, and aligns the open-space edge of the grey tea table with
+the unchanged 2 x 0.6 x 0.04 m MuJoCo table (top z=0.747 m). The scene config is
+passed through `render.json` to the camera worker.
+`isaac_scene.show_colliders` toggles only the Isaac floor/table surfaces; it
+does not disable MuJoCo contacts. See the [carry tutorial](grail_carry.md) for
+the placement, initial robot position and visibility settings.
 
 The USD camera uses MuJoCo `head_camera`'s world pose, vertical field of view,
 aspect ratio and near/far distances. Both native camera frames look along -Z
@@ -36,6 +52,16 @@ This is an image preview, not Kit's USD scene editor. The native Kit GUI stalled
 repeatedly in this machine's simultaneous MuJoCo/Kit window setup, so it is not a
 runtime dependency of this integration. The MuJoCo operation window and keyboard
 controls remain available.
+
+After scene setup, the renderer destroys Kit's unused default viewport window.
+Scene creation and dock callbacks otherwise re-enable that viewport and render
+the full 3DGS room in addition to the published ego camera. The dedicated
+640×480 render product, background, materials and antialiasing settings remain
+unchanged. Offscreen Hydra waits for completion, and Replicator retains its
+current-state capture barrier; Kit is not advanced between camera captures.
+Isaac images are sent immediately before rendering the MuJoCo comparison image.
+The camera viewer wakes for new frames and avoids repainting cached frames;
+recording retains the configured `--fps` cadence.
 
 The small `isaac_renderer.kit` experience loads the viewport and Replicator APIs
 without the full Isaac simulation/task application. In particular it omits
@@ -61,30 +87,8 @@ Copyright 2025–2026 SIMPLE Authors). SIMPLE and Isaac Lab are not dependencies
 
 ## Checks
 
-```bash
-conda activate gr00t-sim
-# After reading and accepting NVIDIA's EULA; inherited by the camera worker
-export OMNI_KIT_ACCEPT_EULA=YES
-# Real MuJoCo child process, existing image schema, RGB channels, idle suppression,
-# SIGSTOP >500ms, latest snapshot after resume, worker death and cleanup
-MUJOCO_GL=egl python -m unittest gear_sonic.tests.test_state_render -v
-
-# Actual USD transform and camera projection check, no VLA weights
-python gear_sonic/scripts/check_render_alignment.py --headless
-# Actual RGB marker pixels across four changing camera poses (detects old frames)
-python gear_sonic/scripts/check_render_alignment.py --headless --render-check
-
-# Live timing, Isaac startup and the existing DDS/keyboard deployment workflow
-python gear_sonic/scripts/run_sim_loop.py --render-backend both --verbose-timing
-```
-
-The alignment check uses 20 deterministic root/joint poses and compares USD world
-transforms against MuJoCo bodies, including the fixed-part relationships. It
-projects markers through the USD camera and independently through MuJoCo's GL
-camera. Limits are 1 mm, 0.1 degrees and 1 pixel. `--usd-only` runs the numerical
-check with standalone USD bindings; it does not validate RTX-rendered pixels.
-`--render-check` also compares red/green/blue marker centroids in actual RTX and
-MuJoCo images immediately after each camera move, with the same 1-pixel limit.
+Start the simulation and camera viewers with the commands in the
+[GRAIL carry tutorial](grail_carry.md) or [keyboard tutorial](keyboard.md).
 
 For the live test, start `bash deploy.sh --input-type keyboard sim` in Terminal 2.
 Verify standing, release with MuJoCo **9**, move and turn with the documented keys.

@@ -86,7 +86,9 @@ def run(options):
         if app is not None:
             from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
 
-            isaac = IsaacVisual(app, model, os.path.dirname(options["model_path"]))
+            isaac = IsaacVisual(app, model, os.path.dirname(options["model_path"]),
+                                scene_config=options["isaac_scene"],
+                                object_asset_path=options["isaac_object_asset"])
         if options["backend"] in ("mujoco", "both"):
             for name, config in options["camera_configs"].items():
                 renderers[name] = mujoco.Renderer(model, height=config["height"], width=config["width"])
@@ -97,6 +99,13 @@ def run(options):
         for name, port in ports.items():
             servers[name] = SensorServer()
             servers[name].start_server(port)
+
+        def publish(name, camera_images, timestamp):
+            message = ImageMessageSchema(
+                images=camera_images,
+                timestamps={key: timestamp for key in camera_images},
+            )
+            servers[name].send_message(message.serialize())
 
         context = zmq.Context()
         socket = context.socket(zmq.SUB)
@@ -113,12 +122,14 @@ def run(options):
         while not stopping and os.getppid() == options["parent_pid"]:
             if app is not None and (not app.is_running() or not preview_is_open()):
                 break
-            # Service UI while idle without publishing duplicate/old camera frames.
-            if time.monotonic() < deadline or not socket.poll(timeout=5):
-                if app is not None:
-                    app.update()
-                else:
-                    time.sleep(min(0.005, max(0.0, deadline - time.monotonic())))
+            # app.update() renders the full scene even with no new state.
+            # Only advance Kit inside the synchronized camera capture; the
+            # OpenCV preview is serviced by preview_is_open() above.
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.005, remaining))
+                continue
+            if not socket.poll(timeout=5):
                 continue
             packet = msgpack.unpackb(socket.recv(), raw=False)
             # After SIGSTOP/startup, IPC can still have bytes in the kernel even
@@ -134,34 +145,33 @@ def run(options):
             if qpos.shape != (model.nq,) or not np.isfinite(qpos).all():
                 raise ValueError("Invalid MuJoCo state snapshot")
             data.qpos[:] = qpos
+            for name, width in (("mocap_pos", 3), ("mocap_quat", 4)):
+                values = np.frombuffer(packet[name], dtype="<f8").reshape(model.nmocap, width)
+                if not np.isfinite(values).all():
+                    raise ValueError(f"Invalid {name} snapshot")
+                getattr(data, name)[:] = values
             data.time = packet["sim_time"]
             # Forward kinematics only. Never mj_step, World.step or timeline.play.
             mujoco.mj_forward(model, data)
             started = time.monotonic()
-            images = {}
             if isaac is not None:
-                images["isaac"] = {"ego_view": isaac.render(data)}
+                isaac_image = isaac.render(data)
+                # Send immediately, before the comparison renderer starts.
+                publish("isaac", {"ego_view": isaac_image}, packet["timestamp"])
             if renderers:
-                images["mujoco"] = {}
+                camera_images = {}
                 for name, renderer in renderers.items():
                     config = options["camera_configs"][name]
                     renderer.update_scene(data, camera=config.get("mjcf_name", name))
-                    images["mujoco"][name] = renderer.render()
-            for name, camera_images in images.items():
-                # Preserve the legacy base64 schema's array channel convention:
-                # cv2 encode/decode both operate on the RGB buffer unchanged.
-                message = ImageMessageSchema(
-                    images=camera_images,
-                    timestamps={key: packet["timestamp"] for key in camera_images},
-                )
-                servers[name].send_message(message.serialize())
+                    camera_images[name] = renderer.render()
+                publish("mujoco", camera_images, packet["timestamp"])
             if isaac is not None and not options["headless"]:
                 import cv2
                 if not preview_created:
                     cv2.namedWindow(preview_title, cv2.WINDOW_NORMAL)
                     cv2.resizeWindow(preview_title, 640, 480)
                     preview_created = True
-                cv2.imshow(preview_title, np.ascontiguousarray(images["isaac"]["ego_view"][..., ::-1]))
+                cv2.imshow(preview_title, np.ascontiguousarray(isaac_image[..., ::-1]))
             frames += 1
             latency_sum += time.time() - packet["timestamp"]
             now = time.monotonic()

@@ -86,8 +86,10 @@ class DefaultEnv:
             backend=self.config.get("RENDER_BACKEND", "mujoco"),
             fps=self.config.get("RENDER_FPS", 30.0),
             camera_port=camera_port,
-            comparison_camera_port=self.config.get("COMPARISON_CAMERA_PORT", 5556),
+            comparison_camera_port=self.config.get("COMPARISON_CAMERA_PORT", 5559),
             headless=self.config.get("ISAAC_HEADLESS", False),
+            isaac_scene=getattr(self, "grail_scene", {}).get("isaac_scene"),
+            isaac_object_asset=getattr(self, "grail_manifest", {}).get("source"),
         )
 
     def _get_dof_indices_by_class(self):
@@ -149,7 +151,7 @@ class DefaultEnv:
     def init_scene(self):
         """Initialize the default robot scene"""
         xml_path = str(pathlib.Path(GEAR_SONIC_ROOT) / self.config["ROBOT_SCENE"])
-        self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        self.mj_model = self.load_model(xml_path)
         self.mj_data = mujoco.MjData(self.mj_model)
         self.mj_model.opt.timestep = self.sim_dt
         self.torso_index = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
@@ -184,6 +186,7 @@ class DefaultEnv:
                 )
 
         # Enable the elastic band
+        self.elastic_band = None
         if self.config["ENABLE_ELASTIC_BAND"] and self.use_floating_root_link:
             self.elastic_band = ElasticBand()
             if "g1" in self.config["ROBOT_TYPE"]:
@@ -210,7 +213,8 @@ class DefaultEnv:
         else:
             if self.onscreen:
                 self.viewer = mujoco.viewer.launch_passive(
-                    self.mj_model, self.mj_data, show_left_ui=False, show_right_ui=False
+                    self.mj_model, self.mj_data, show_left_ui=False, show_right_ui=False,
+                    key_callback=getattr(self, "viewer_key_callback", None),
                 )
             else:
                 mujoco.mj_forward(self.mj_model, self.mj_data)
@@ -249,6 +253,24 @@ class DefaultEnv:
         self.left_hand_index = np.array(self.left_hand_index)
         self.right_hand_index = np.array(self.right_hand_index)
 
+        # Joint IDs, qpos addresses, DOF addresses and actuator IDs are separate
+        # namespaces. Free object joints must never shift robot control indices.
+        for group in ("body", "left_hand", "right_hand"):
+            ids = getattr(self, group+"_joint_index" if group == "body" else group+"_index")
+            setattr(self, group+"_qpos_adr", self.mj_model.jnt_qposadr[ids])
+            setattr(self, group+"_dof_adr", self.mj_model.jnt_dofadr[ids])
+            actuators = []
+            for joint in ids:
+                matches = np.flatnonzero((self.mj_model.actuator_trnid[:, 0] == joint)
+                                        & (self.mj_model.actuator_trntype == mujoco.mjtTrn.mjTRN_JOINT))
+                if len(matches) != 1:
+                    raise ValueError(f"Expected one actuator for robot joint {joint}, got {matches}")
+                actuators.append(matches[0])
+            setattr(self, group+"_actuator_ids", np.array(actuators))
+
+    def load_model(self, xml_path):
+        return mujoco.MjModel.from_xml_path(xml_path)
+
     def init_renderers(self):
         self.renderers = {}
         for camera_name, camera_config in self.camera_configs.items():
@@ -279,12 +301,12 @@ class DefaultEnv:
                         + self.unitree_bridge.low_cmd.motor_cmd[i].kp
                         * (
                             self.unitree_bridge.low_cmd.motor_cmd[i].q
-                            - self.mj_data.qpos[self.body_joint_index[i] + self.qpos_offset - 1]
+                            - self.mj_data.qpos[self.body_qpos_adr[i]]
                         )
                         + self.unitree_bridge.low_cmd.motor_cmd[i].kd
                         * (
                             self.unitree_bridge.low_cmd.motor_cmd[i].dq
-                            - self.mj_data.qvel[self.body_joint_index[i] + self.qvel_offset - 1]
+                            - self.mj_data.qvel[self.body_dof_adr[i]]
                         )
                     )
         return body_torques
@@ -309,12 +331,12 @@ class DefaultEnv:
                     + self.unitree_bridge.left_hand_cmd.motor_cmd[i].kp
                     * (
                         self.unitree_bridge.left_hand_cmd.motor_cmd[i].q
-                        - self.mj_data.qpos[self.left_hand_index[i] + self.qpos_offset - 1]
+                        - self.mj_data.qpos[self.left_hand_qpos_adr[i]]
                     )
                     + self.unitree_bridge.left_hand_cmd.motor_cmd[i].kd
                     * (
                         self.unitree_bridge.left_hand_cmd.motor_cmd[i].dq
-                        - self.mj_data.qvel[self.left_hand_index[i] + self.qvel_offset - 1]
+                        - self.mj_data.qvel[self.left_hand_dof_adr[i]]
                     )
                 )
                 right_hand_torques[i] = (
@@ -322,12 +344,12 @@ class DefaultEnv:
                     + self.unitree_bridge.right_hand_cmd.motor_cmd[i].kp
                     * (
                         self.unitree_bridge.right_hand_cmd.motor_cmd[i].q
-                        - self.mj_data.qpos[self.right_hand_index[i] + self.qpos_offset - 1]
+                        - self.mj_data.qpos[self.right_hand_qpos_adr[i]]
                     )
                     + self.unitree_bridge.right_hand_cmd.motor_cmd[i].kd
                     * (
                         self.unitree_bridge.right_hand_cmd.motor_cmd[i].dq
-                        - self.mj_data.qvel[self.right_hand_index[i] + self.qvel_offset - 1]
+                        - self.mj_data.qvel[self.right_hand_dof_adr[i]]
                     )
                 )
         return np.concatenate((left_hand_torques, right_hand_torques))
@@ -372,19 +394,19 @@ class DefaultEnv:
         )
         obs["secondary_imu_vel"] = pose[7:13]
 
-        obs["body_q"] = self.mj_data.qpos[self.body_joint_index + 7 - 1]
-        obs["body_dq"] = self.mj_data.qvel[self.body_joint_index + 6 - 1]
-        obs["body_ddq"] = self.mj_data.qacc[self.body_joint_index + 6 - 1]
-        obs["body_tau_est"] = self.mj_data.actuator_force[self.body_joint_index - 1]
+        obs["body_q"] = self.mj_data.qpos[self.body_qpos_adr]
+        obs["body_dq"] = self.mj_data.qvel[self.body_dof_adr]
+        obs["body_ddq"] = self.mj_data.qacc[self.body_dof_adr]
+        obs["body_tau_est"] = self.mj_data.actuator_force[self.body_actuator_ids]
         if self.num_hand_dof > 0:
-            obs["left_hand_q"] = self.mj_data.qpos[self.left_hand_index + self.qpos_offset - 1]
-            obs["left_hand_dq"] = self.mj_data.qvel[self.left_hand_index + self.qvel_offset - 1]
-            obs["left_hand_ddq"] = self.mj_data.qacc[self.left_hand_index + self.qvel_offset - 1]
-            obs["left_hand_tau_est"] = self.mj_data.actuator_force[self.left_hand_index - 1]
-            obs["right_hand_q"] = self.mj_data.qpos[self.right_hand_index + self.qpos_offset - 1]
-            obs["right_hand_dq"] = self.mj_data.qvel[self.right_hand_index + self.qvel_offset - 1]
-            obs["right_hand_ddq"] = self.mj_data.qacc[self.right_hand_index + self.qvel_offset - 1]
-            obs["right_hand_tau_est"] = self.mj_data.actuator_force[self.right_hand_index - 1]
+            obs["left_hand_q"] = self.mj_data.qpos[self.left_hand_qpos_adr]
+            obs["left_hand_dq"] = self.mj_data.qvel[self.left_hand_dof_adr]
+            obs["left_hand_ddq"] = self.mj_data.qacc[self.left_hand_dof_adr]
+            obs["left_hand_tau_est"] = self.mj_data.actuator_force[self.left_hand_actuator_ids]
+            obs["right_hand_q"] = self.mj_data.qpos[self.right_hand_qpos_adr]
+            obs["right_hand_dq"] = self.mj_data.qvel[self.right_hand_dof_adr]
+            obs["right_hand_ddq"] = self.mj_data.qacc[self.right_hand_dof_adr]
+            obs["right_hand_tau_est"] = self.mj_data.actuator_force[self.right_hand_actuator_ids]
         obs["time"] = self.mj_data.time
         return obs
 
@@ -394,6 +416,11 @@ class DefaultEnv:
         self.lowstate_published_at = time.monotonic()
         if self.unitree_bridge.joystick:
             self.unitree_bridge.PublishWirelessController()
+        if hasattr(self, "grail") and not self.grail.before_step():
+            # Static reset barrier publishes DDS above but never applies old
+            # control forces or advances physics while C++ histories refresh.
+            self.mj_data.ctrl[:] = 0
+            return
         if self.elastic_band:
             if self.elastic_band.enable and self.use_floating_root_link:
                 pose = np.concatenate(
@@ -417,11 +444,11 @@ class DefaultEnv:
                 self.mj_data.xfrc_applied[self.band_attached_link] = np.zeros(6)
         body_torques = self.compute_body_torques()
         hand_torques = self.compute_hand_torques()
-        # -1: actuator array is 0-based while joint indices from the model are 1-based
-        self.torques[self.body_joint_index - 1] = body_torques
+        # Use the joint transmission mapping, independent of object free joints.
+        self.torques[self.body_actuator_ids] = body_torques
         if self.num_hand_dof > 0:
-            self.torques[self.left_hand_index - 1] = hand_torques[: self.num_hand_dof]
-            self.torques[self.right_hand_index - 1] = hand_torques[self.num_hand_dof :]
+            self.torques[self.left_hand_actuator_ids] = hand_torques[: self.num_hand_dof]
+            self.torques[self.right_hand_actuator_ids] = hand_torques[self.num_hand_dof :]
 
         self.torques = np.clip(self.torques, -self.torque_limit, self.torque_limit)
 
@@ -555,12 +582,15 @@ class BaseSimulator:
         self.robot = Robot(self.config)
 
         # Create the environment
-        if env_name == "default":
+        if env_name == "grail":
+            from gear_sonic.utils.grail.sim_env import GrailEnv
+            self.sim_env = GrailEnv(config, env_name, **kwargs)
+        elif env_name == "default":
             self.sim_env = DefaultEnv(config, env_name, **kwargs)
         else:
             raise ValueError(
                 f"Invalid environment name: {env_name}. "
-                f"Only 'default' is supported in this minimal build."
+                f"Supported environments: default, grail."
             )
 
         try:
@@ -683,6 +713,8 @@ class BaseSimulator:
         self._closed = True
         self._running = False
         try:
+            if hasattr(self.sim_env, "grail"):
+                self.sim_env.grail.close()
             if self.sim_env.image_publish_process is not None:
                 self.sim_env.image_publish_process.stop()
             if self.sim_env.viewer is not None:

@@ -216,6 +216,16 @@ logs_eval/
 # Model checkpoints directory
 models/
 
+# GRAIL training robot used by the Isaac camera renderer (all other data stays ignored).
+!/gear_sonic/data/
+/gear_sonic/data/*
+!/gear_sonic/data/robots/
+/gear_sonic/data/robots/*
+!/gear_sonic/data/robots/g1/
+/gear_sonic/data/robots/g1/*
+!/gear_sonic/data/robots/g1/g1_43dof_s3.usda
+!/gear_sonic/data/robots/g1/GRAIL_ASSET.md
+
 # Downloaded from HuggingFace (hf download)
 sample_data/
 sonic_release/

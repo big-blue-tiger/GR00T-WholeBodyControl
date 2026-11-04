@@ -53,6 +53,29 @@ def main(config: ArgsConfig):
     # NOTE: we will override the interface to local if it is not specified
     wbc_config["ENV_NAME"] = config.env_name
 
+    if config.env_name == "grail":
+        if not config.dataset_dir or not config.initial_pose_file:
+            raise ValueError("grail requires --dataset-dir and --initial-pose-file")
+        if config.sim_frequency != 200 or config.control_frequency != 50:
+            raise ValueError("GRAIL requires 200 Hz physics / 50 Hz policy")
+        if config.interface not in ("lo", "lo0"):
+            raise ValueError("GRAIL demo is supported on local simulation only")
+        control_ports = (5556, 5557, 5560, 5561)
+        if config.camera_port in control_ports or config.comparison_camera_port in control_ports:
+            raise ValueError("Camera ports conflict with decoder/GRAIL control ports")
+        wbc_config.update(
+            ENABLE_ELASTIC_BAND=False,
+            GRAIL_SCENE_CONFIG=config.scene_config,
+            GRAIL_INITIAL_POSE=config.initial_pose_file,
+            GRAIL_DATASET_DIR=config.dataset_dir,
+            GRAIL_OBJECT_KEY=config.object_key,
+            GRAIL_CACHE_DIR=config.grail_cache_dir,
+            GRAIL_SEED=config.grail_seed,
+            GRAIL_OBSERVATION_ENDPOINT=config.grail_observation_endpoint,
+            GRAIL_ACTION_ENDPOINT=config.grail_action_endpoint,
+            GRAIL_LOG=config.grail_log,
+        )
+
     wbc_config.update(
         RENDER_BACKEND=config.render_backend,
         ISAAC_HEADLESS=config.isaac_headless,

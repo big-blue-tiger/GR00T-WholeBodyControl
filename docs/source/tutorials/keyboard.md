@@ -57,7 +57,7 @@ python gear_sonic/scripts/run_sim_loop.py --render-backend isaac
 # Hide only the Isaac image preview; the MuJoCo control window remains available
 python gear_sonic/scripts/run_sim_loop.py --render-backend isaac --isaac-headless
 
-# Compare the same snapshot: Isaac on 5555, MuJoCo on 5556
+# Compare the same snapshot: Isaac on 5555, MuJoCo on 5559
 python gear_sonic/scripts/run_sim_loop.py --render-backend both
 ```
 
@@ -73,7 +73,7 @@ close it.
 ```bash
 # Separate viewer terminals, using the existing camera client unchanged
 python gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5555
-python gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5556
+python gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5559
 
 # Optional camera publishing with the MuJoCo-only backend
 python gear_sonic/scripts/run_sim_loop.py --enable-offscreen --enable-image-publish

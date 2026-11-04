@@ -1,0 +1,194 @@
+version: 1
+# Select the object asset with run_sim_loop --object-key.
+source:
+  reference: GRAIL reference_free.py/data.py/plan.py/task.py and sparse_command.py
+  robot: G1_43DOF_CFG / g1_43dof_s3.usda
+  dynamics: GRAIL gear_sonic/envs/manager_env/robots/g1.py G1_43DOF_CFG (armature/effort);
+    C++ PD and finger smoothing retained
+# Both MuJoCo and Isaac derive their ego projection from this camera.
+ego_camera:
+  vertical_fov_deg: 75.0
+table:
+  position_xy:
+  - 0.0
+  - 0.0
+  quaternion_wxyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  size:
+  - 2.0
+  - 0.6
+  - 0.04
+  top_height_range:
+  - 0.747
+  - 0.747
+# Asset coordinates refer to the USDZ's default prim, including its existing
+# child transform. Rigid transform only: no scale, metres remain metres.
+isaac_scene:
+  enabled: true
+  asset_path: gear_sonic/data/scene/3dgs/839951.usdz
+  translation: [4.16, 2.15, 0.342]
+  quaternion_wxyz: [0.0, 0.0, 0.7071067811865476, -0.7071067811865476]
+  # Show the MuJoCo floor/table surfaces in Isaac for alignment debugging.
+  # Visibility only; MuJoCo collisions remain active in either mode.
+  show_colliders: false
+object:
+  # Quaternion mean of objects/*.pkl root_quat[0, 0] (300 first frames, wxyz).
+  quaternion_wxyz: [0.7299179939730086, 0.6821416636692589, 0.01544398874296693, 0.04079161645070567]
+  init_z_offset: 0.05
+  mass: 0.1
+  friction:
+  - 1.0
+  - 0.005
+  - 0.0001
+# Only hand/object contact pairs use this profile. Table/feet/body contacts
+# retain their existing friction and solver parameters. Disable for an A/B run.
+grasp_contact:
+  enabled: true
+  condim: 6
+  # Two sliding coefficients, torsional radius (m), two rolling radii (m).
+  friction: [2.0, 2.0, 0.01, 0.001, 0.001]
+  # Time constant >= 2 * the 0.005 s physics step, critical damping.
+  solref: [0.01, 1.0]
+  # Stiffer frictional constraints reduce soft-contact creep at fixed grip force.
+  solimp: [0.999, 0.9999, 0.001, 0.5, 2.0]
+robot:
+  init_z_offset: 0.05
+  # Reference-free reset: random +/-1 m along the table, 1.5 m outward,
+  # facing its center. Omit initial_position_xy to retain this sampling.
+  observation_joint_names:
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - waist_yaw_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - waist_roll_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - waist_pitch_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_shoulder_pitch_joint
+  - right_shoulder_pitch_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_shoulder_roll_joint
+  - right_shoulder_roll_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_wrist_roll_joint
+  - right_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - right_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+  - left_hand_index_0_joint
+  - left_hand_middle_0_joint
+  - left_hand_thumb_0_joint
+  - right_hand_index_0_joint
+  - right_hand_middle_0_joint
+  - right_hand_thumb_0_joint
+  - left_hand_index_1_joint
+  - left_hand_middle_1_joint
+  - left_hand_thumb_1_joint
+  - right_hand_index_1_joint
+  - right_hand_middle_1_joint
+  - right_hand_thumb_1_joint
+  - left_hand_thumb_2_joint
+  - right_hand_thumb_2_joint
+  initial_body_joint_names:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+  - waist_yaw_joint
+  - waist_roll_joint
+  - waist_pitch_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - left_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_joint
+  - right_wrist_roll_joint
+  - right_wrist_pitch_joint
+  - right_wrist_yaw_joint
+  initial_hand_joint_names:
+  - left_hand_index_0_joint
+  - left_hand_index_1_joint
+  - left_hand_middle_0_joint
+  - left_hand_middle_1_joint
+  - left_hand_thumb_0_joint
+  - left_hand_thumb_1_joint
+  - left_hand_thumb_2_joint
+  - right_hand_index_0_joint
+  - right_hand_index_1_joint
+  - right_hand_middle_0_joint
+  - right_hand_middle_1_joint
+  - right_hand_thumb_0_joint
+  - right_hand_thumb_1_joint
+  - right_hand_thumb_2_joint
+  default_joint_pos:
+    .*_hip_pitch_joint: -0.312
+    .*_knee_joint: 0.669
+    .*_ankle_pitch_joint: -0.363
+    .*_elbow_joint: 0.6
+    left_shoulder_roll_joint: 0.2
+    left_shoulder_pitch_joint: 0.2
+    right_shoulder_roll_joint: -0.2
+    right_shoulder_pitch_joint: 0.2
+  dynamics:
+    .*_(hip_pitch|hip_roll|knee)_joint:
+      armature: 0.025101925
+      effort: 139.0
+    (.*_hip_yaw|waist_yaw)_joint:
+      armature: 0.01017752
+      effort: 88.0
+    (.*_ankle_(pitch|roll)|waist_(pitch|roll))_joint:
+      armature: 0.00721945
+      effort: 50.0
+    .*_(shoulder_(pitch|roll|yaw)|elbow|wrist_roll)_joint:
+      armature: 0.003609725
+      effort: 25.0
+    .*_wrist_(pitch|yaw)_joint:
+      armature: 0.00425
+      effort: 5.0
+    .*_hand_thumb_0_joint:
+      armature: 0.001
+      effort: 2.45
+    .*_hand_(index_[01]|middle_[01]|thumb_[12])_joint:
+      armature: 0.001
+      effort: 1.4
+contact_links:
+- right_hand_palm_link
+- right_hand_thumb_0_link
+- right_hand_thumb_1_link
+- right_hand_thumb_2_link
+- right_hand_index_0_link
+- right_hand_index_1_link
+- right_hand_middle_0_link
+- right_hand_middle_1_link
+hand_frame_links:
+- right_hand_thumb_2_link
+- right_hand_index_1_link
+- right_hand_middle_1_link
+planner: {}

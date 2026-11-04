@@ -45,7 +45,7 @@ class CameraViewerConfig:
     """Camera server port."""
 
     fps: int = 30
-    """Target display refresh rate (Hz)."""
+    """Recording frame rate (Hz); live display follows incoming frames."""
 
     output_path: Optional[str] = None
     """Output directory for recordings. Auto-creates 'camera_recordings/' if not set."""
@@ -85,8 +85,9 @@ def main(config: CameraViewerConfig):
     loop_period = 1.0 / config.fps
 
     window_name = "SONIC Camera Viewer"
+    last_message = None
 
-    print(f"Target FPS: {config.fps}")
+    print(f"Recording FPS: {config.fps}; live display follows incoming frames")
     print(f"Recordings will be saved to: {output_dir}")
     print("Controls: R = start/stop recording, Q = quit")
 
@@ -102,58 +103,63 @@ def main(config: CameraViewerConfig):
                     time.sleep(remaining)
                 continue
 
-            tiles = []
-            for name in camera_names:
-                img = image_data["images"].get(name)
-                if img is None:
-                    continue
+            # read() returns the same cached message while waiting for a new
+            # packet. Avoid repainting it, but keep the recording cadence.
+            draw_frame = is_recording or image_data is not last_message
+            last_message = image_data
+            if draw_frame:
+                tiles = []
+                for name in camera_names:
+                    img = image_data["images"].get(name)
+                    if img is None:
+                        continue
 
-                if img.shape[2] == 3:
-                    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                else:
-                    img_bgr = img
+                    if img.shape[2] == 3:
+                        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                    else:
+                        img_bgr = img
 
-                if is_recording and name in video_writers:
-                    video_writers[name].write(img_bgr)
+                    if is_recording and name in video_writers:
+                        video_writers[name].write(img_bgr)
 
-                h, w = img_bgr.shape[:2]
-                if w > config.max_display_width:
-                    scale = config.max_display_width / w
-                    img_bgr = cv2.resize(
-                        img_bgr, (config.max_display_width, int(h * scale))
-                    )
-
-                label = f"{name}"
-                if is_recording:
-                    label = f"[REC] {name}"
-                cv2.putText(
-                    img_bgr, label, (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2,
-                )
-                tiles.append(img_bgr)
-
-            if tiles:
-                max_h = max(t.shape[0] for t in tiles)
-                padded = []
-                for t in tiles:
-                    if t.shape[0] < max_h:
-                        pad = np.zeros(
-                            (max_h - t.shape[0], t.shape[1], 3), dtype=np.uint8
+                    h, w = img_bgr.shape[:2]
+                    if w > config.max_display_width:
+                        scale = config.max_display_width / w
+                        img_bgr = cv2.resize(
+                            img_bgr, (config.max_display_width, int(h * scale))
                         )
-                        t = np.vstack([t, pad])
-                    padded.append(t)
-                canvas = np.hstack(padded)
 
-                if is_recording:
-                    frame_count += 1
-                    elapsed_rec = time.time() - recording_start_time
-                    status = f"REC {frame_count}f / {elapsed_rec:.1f}s"
+                    label = f"{name}"
+                    if is_recording:
+                        label = f"[REC] {name}"
                     cv2.putText(
-                        canvas, status, (canvas.shape[1] - 300, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2,
+                        img_bgr, label, (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2,
                     )
+                    tiles.append(img_bgr)
 
-                cv2.imshow(window_name, canvas)
+                if tiles:
+                    max_h = max(t.shape[0] for t in tiles)
+                    padded = []
+                    for t in tiles:
+                        if t.shape[0] < max_h:
+                            pad = np.zeros(
+                                (max_h - t.shape[0], t.shape[1], 3), dtype=np.uint8
+                            )
+                            t = np.vstack([t, pad])
+                        padded.append(t)
+                    canvas = np.hstack(padded)
+
+                    if is_recording:
+                        frame_count += 1
+                        elapsed_rec = time.time() - recording_start_time
+                        status = f"REC {frame_count}f / {elapsed_rec:.1f}s"
+                        cv2.putText(
+                            canvas, status, (canvas.shape[1] - 300, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2,
+                        )
+
+                    cv2.imshow(window_name, canvas)
 
             key = cv2.waitKey(1) & 0xFF
 
@@ -194,7 +200,13 @@ def main(config: CameraViewerConfig):
             elapsed = time.monotonic() - t_start
             remaining = loop_period - elapsed
             if remaining > 0:
-                time.sleep(remaining)
+                if is_recording:
+                    # Keep the configured recording cadence and file duration.
+                    time.sleep(remaining)
+                else:
+                    # Wake as soon as a new frame arrives instead of adding up
+                    # to one whole display period to the camera latency.
+                    client.socket.poll(timeout=min(5, max(1, int(remaining * 1000))))
 
     except KeyboardInterrupt:
         print("\nExiting...")
