@@ -37,7 +37,7 @@ isaac_scene:
 object:
   # Quaternion mean of objects/*.pkl root_quat[0, 0] (300 first frames, wxyz).
   quaternion_wxyz: [0.7299179939730086, 0.6821416636692589, 0.01544398874296693, 0.04079161645070567]
-  init_z_offset: 0.05
+  init_z_offset: 0.001
   mass: 0.1
   friction:
   - 1.0
@@ -55,7 +55,7 @@ grasp_contact:
   # Stiffer frictional constraints reduce soft-contact creep at fixed grip force.
   solimp: [0.999, 0.9999, 0.001, 0.5, 2.0]
 robot:
-  init_z_offset: 0.05
+  init_z_offset: 0.001
   # Reference-free reset: random +/-1 m along the table, 1.5 m outward,
   # facing its center. Omit initial_position_xy to retain this sampling.
   observation_joint_names:

@@ -18,6 +18,27 @@ def relative_pose(frame_pos, frame_rot, position, orientation):
     )
 
 
+def table_edge_line(table_pos, table_rot, table_size, pelvis_pos, pelvis_rot, hand_pos, hand_rot):
+    """GRAIL table_edge_line_b: choose a finite edge, encode its infinite line."""
+    hx, hy, hz = np.asarray(table_size) * 0.5
+    midpoints = np.array([[0, -hy, hz], [hx, 0, hz], [0, hy, hz], [-hx, 0, hz]])
+    tangents = np.array([[1., 0, 0], [0, 1., 0], [-1., 0, 0], [0, -1., 0]])
+    lengths = np.array([hx, hy, hx, hy])
+    pelvis_t = table_rot.T @ (pelvis_pos - table_pos)
+    deltas = pelvis_t - midpoints
+    along = np.sum(deltas * tangents, axis=-1).clip(-lengths, lengths)
+    segment_delta = deltas - along[:, None] * tangents
+    edge = np.argmin(np.sum(segment_delta**2, axis=-1))
+    midpoint, direction = midpoints[edge], tangents[edge]
+    values = []
+    for origin, orientation in ((pelvis_pos, pelvis_rot), (hand_pos, hand_rot)):
+        origin_t = table_rot.T @ (origin - table_pos)
+        closest_delta = midpoint + np.dot(origin_t - midpoint, direction) * direction - origin_t
+        to_frame = orientation.T @ table_rot
+        values.extend((to_frame @ closest_delta, to_frame @ direction))
+    return np.concatenate(values)
+
+
 class Observations:
     def __init__(self, model, config, bps):
         self.model, self.config = model, config
@@ -71,18 +92,19 @@ class Observations:
     def proprio(self, data):
         rot = data.xmat[self.pelvis].reshape(3, 3)
         velocity = np.empty(6)
-        # mjOBJ_BODY reports velocity at the body's COM in body orientation,
-        # matching Isaac Lab root_{lin,ang}_vel_b (COM velocity, actor axes).
+        # mjOBJ_BODY's local axes are its inertial frame, which need not equal
+        # the actor frame. Read COM velocity in world axes and rotate explicitly
+        # to match Isaac Lab root_{lin,ang}_vel_b (COM velocity, actor axes).
         mujoco.mj_objectVelocity(
-            self.model, data, mujoco.mjtObj.mjOBJ_BODY, self.pelvis, velocity, 1
+            self.model, data, mujoco.mjtObj.mjOBJ_BODY, self.pelvis, velocity, 0
         )
         frame = np.concatenate(
             (
                 data.qpos[self.qadr] - self.defaults,
                 data.qvel[self.vadr],
                 rot.T @ np.array([0.0, 0.0, -1.0]),
-                velocity[:3],
-                velocity[3:],
+                rot.T @ velocity[:3],
+                rot.T @ velocity[3:],
                 self.last_action,
             )
         ).astype(np.float32)
@@ -100,12 +122,12 @@ class Observations:
         hand_pos = data.xpos[self.hand].mean(axis=0)
         hand_rot = data.xmat[self.hand[0]].reshape(3, 3)
         obj_pos, obj_rot = data.xpos[self.obj], data.xmat[self.obj].reshape(3, 3)
-        half = np.array(self.config["table"]["size"]) / 2
-        corners = np.array(
-            [[x, y, half[2]] for x in (-half[0], half[0]) for y in (-half[1], half[1])]
+        edge = (
+            np.zeros(12) if task.playing else table_edge_line(
+                data.xpos[self.table], data.xmat[self.table].reshape(3, 3),
+                self.config["table"]["size"], pelvis_pos, pelvis_rot, hand_pos, hand_rot,
+            )
         )
-        corners = corners @ data.xmat[self.table].reshape(3, 3).T + data.xpos[self.table]
-        corners = ((corners - pelvis_pos) @ pelvis_rot).reshape(12)
 
         def goal(position, quaternion):
             rot = rotation(quaternion)
@@ -117,7 +139,7 @@ class Observations:
             )
 
         release = (
-            goal(task.plan.release_position, task.plan.release_quaternion)
+            goal(task.plan.final_position, task.plan.final_quaternion)
             if task.playing
             else np.zeros(18)
         )
@@ -127,20 +149,19 @@ class Observations:
             else goal(task.plan.carry_position, task.plan.carry_quaternion)
         )
         forces, _ = self.contacts(data)
-        sparse, drop = task.command()
+        sparse = task.command(pelvis_pos)
         values = np.concatenate(
             (
                 self.bps,
-                np.zeros(12) if task.playing else corners,
+                edge,
                 relative_pose(pelvis_pos, pelvis_rot, obj_pos, obj_rot),
                 relative_pose(hand_pos, hand_rot, obj_pos, obj_rot),
-                forces,
+                [float(np.any(forces > 0.01))],
                 release,
                 carry,
                 sparse,
-                [drop],
             )
         ).astype(np.float32)
-        if values.shape != (87,) or not np.isfinite(values).all():
+        if values.shape != (79,) or not np.isfinite(values).all():
             raise ValueError("Invalid task observation")
         return values

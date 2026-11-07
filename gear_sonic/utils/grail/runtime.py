@@ -8,13 +8,13 @@ import uuid
 import msgpack
 import mujoco
 import numpy as np
-from scipy.spatial.transform import Rotation
 import zmq
 
 from gear_sonic.utils.teleop.zmq.zmq_planner_sender import pack_pose_message
 
-from .observations import Observations, rotation
-from .plan import CarryPlannerConfig, sample_carry_plan, table_outward_normal
+from .observations import Observations
+from .plan import CarryPlannerConfig
+from .episode import reset_scene
 from .task import CarryTask
 from .transport import pack, socket, unpack
 
@@ -63,58 +63,12 @@ class GrailRuntime:
             self.log.write(json.dumps(entry) + "\n")
         print("[GRAIL] " + json.dumps(entry), flush=True)
 
-    def mocap(self, name, pos, quat):
-        index = self.model.body_mocapid[self.model.body(name).id]
-        self.data.mocap_pos[index] = pos
-        self.data.mocap_quat[index] = quat
-
     def reset(self):
         self.episode += 1
         self.episode_id = f"{self.session}:{self.episode}"
-        mujoco.mj_resetData(self.model, self.data)
-        top = self.rng.uniform(*self.cfg["table"]["top_height_range"])
-        table_pos = np.r_[self.cfg["table"]["position_xy"], top - 0.02]
-        table_quat = self.cfg["table"]["quaternion_wxyz"]
-        normal = table_outward_normal(table_quat, self.cfg["table"]["size"], [0, 1])
-        tangent = np.array([normal[1], -normal[0]])
-        samples = self.rng.random(4)
-        robot_pos = np.r_[
-            table_pos[:2] + tangent * (2 * samples[0] - 1) + normal * 1.5,
-            self.initial["root_trans_offset"][2] + self.cfg["robot"]["init_z_offset"],
-        ]
-        if "initial_position_xy" in self.cfg["robot"]:
-            robot_pos[:2] = self.cfg["robot"]["initial_position_xy"]
-        direction = table_pos[:2] - robot_pos[:2]
-        yaw = np.arctan2(direction[1], direction[0])
-        initial_rot = Rotation.from_quat(self.initial["root_rot"])
-        initial_yaw = np.arctan2(initial_rot.as_matrix()[1, 0], initial_rot.as_matrix()[0, 0])
-        quat = (Rotation.from_euler("z", yaw - initial_yaw) * initial_rot).as_quat()[[3, 0, 1, 2]]
-        self.data.qpos[:7] = np.r_[robot_pos, quat]
-        for field, names in (
-            ("dof", self.cfg["robot"]["initial_body_joint_names"]),
-            ("hand_dof_pos", self.cfg["robot"]["initial_hand_joint_names"]),
-        ):
-            for name, value in zip(names, self.initial[field]):
-                self.data.qpos[self.model.jnt_qposadr[self.model.joint(name).id]] = value
-        obj_quat = np.array(self.cfg["object"]["quaternion_wxyz"])
-        obj_quat /= np.linalg.norm(obj_quat)
-        vertices = np.asarray(self.manifest["vertices"]) @ rotation(obj_quat).T
-        rest = np.r_[
-            table_pos[:2] + tangent * (samples[1] - 0.5) + normal * (0.25 * samples[2]),
-            top - vertices[:, 2].min(),
-        ]
-        self.plan = sample_carry_plan(rest, obj_quat, yaw, normal, self.rng, self.planner)
-        address = self.model.jnt_qposadr[self.model.joint("grail_object_joint").id]
-        self.data.qpos[address : address + 7] = np.r_[
-            rest + [0, 0, self.cfg["object"]["init_z_offset"]], obj_quat
-        ]
-        self.mocap("grail_table", table_pos, table_quat)
-        for name in ("carry", "release"):
-            self.mocap(
-                "grail_" + name,
-                getattr(self.plan, name + "_position"),
-                getattr(self.plan, name + "_quaternion"),
-            )
+        self.plan, details = reset_scene(
+            self.model, self.data, self.cfg, self.manifest, self.initial, self.rng, self.planner
+        )
         self.task = CarryTask(self.plan, self.planner.pickup_settle_s)
         self.observations.reset()
         self.phase = "flushing"
@@ -130,17 +84,7 @@ class GrailRuntime:
         self.arm_at = None
         self.step_count = 0
         self.reported_events = set()
-        mujoco.mj_forward(self.model, self.data)
-        self.event(
-            "reset",
-            table_top=top,
-            object_rest=rest.tolist(),
-            object_initial=self.data.qpos[address : address + 7].tolist(),
-            carry=self.plan.carry_position.tolist(),
-            release=self.plan.release_position.tolist(),
-            plan_drop_s=self.plan.release_start_frame / 25,
-            collision=self.manifest["collision_note"],
-        )
+        self.event("reset", **details)
 
     def send_decoder(self, token, left, right):
         self.decoder.send(
@@ -226,6 +170,7 @@ class GrailRuntime:
                     sim_time=float(self.data.time),
                     observation_time=now,
                     phase=self.phase,
+                    release_requested=bool(self.task.release_requested),
                 ),
                 proprio=self.observations.proprio(self.data),
                 task=self.observations.privileged(self.data, self.task),

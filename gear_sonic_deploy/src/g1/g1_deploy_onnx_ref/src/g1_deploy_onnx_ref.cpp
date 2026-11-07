@@ -132,6 +132,7 @@
 
 // Control policy
 #include "../include/control_policy.hpp"
+#include "../include/simulation_control.hpp"
 
 // Dex3 hands
 #include "../include/dex3_hands.hpp"
@@ -3151,16 +3152,8 @@ class G1Deploy {
       auto& action_buffer = policy_engine_->GetActionBuffer();
       float* floatarr = action_buffer.data();
       
-      MotorCommand motor_command_tmp;
-      for (int i = 0; i < G1_NUM_MOTOR; i++) {
-        const double action_value = static_cast<double>(floatarr[isaaclab_to_mujoco[i]]) * g1_action_scale[i];
-        last_action[i] = static_cast<double>(floatarr[i]);
-        motor_command_tmp.q_target.at(i) = static_cast<float>(default_angles[i] + action_value);
-        motor_command_tmp.tau_ff.at(i) = 0.0;
-        motor_command_tmp.kp.at(i) = kps[i];
-        motor_command_tmp.kd.at(i) = kds[i];
-        motor_command_tmp.dq_target.at(i) = 0.0;
-      }
+      MotorCommand motor_command_tmp = body_command(floatarr);
+      for (int i = 0; i < G1_NUM_MOTOR; ++i) last_action[i] = static_cast<double>(floatarr[i]);
       apply_motor_gain_scales(motor_gain_scales_, motor_command_tmp);
       motor_command_buffer_.SetData(motor_command_tmp);
       return true;

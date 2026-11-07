@@ -95,6 +95,7 @@ Documentation
    tutorials/keyboard
    tutorials/isaac_rendering
    tutorials/grail_carry
+   tutorials/grail_offline
    tutorials/gamepad
    tutorials/zmq
    tutorials/manager

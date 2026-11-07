@@ -208,6 +208,14 @@ target_link_libraries(
 )
 
 # Setting our output directory and C++ standard
+add_executable(grail_offline_decoder offline/decoder.cpp)
+target_include_directories(grail_offline_decoder PRIVATE ${EXE_INCLUDES} ${MSGPACK_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/src)
+target_link_directories(grail_offline_decoder PRIVATE ${CUDA_LINK_DIRS})
+target_link_libraries(grail_offline_decoder PRIVATE ${PROJECT_NAME} ${EXE_LIBS})
+set_target_properties(grail_offline_decoder PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/target/release/"
+  CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+
 set_target_properties(
   ${EXECUTABLE_NAME}
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/target/release/"

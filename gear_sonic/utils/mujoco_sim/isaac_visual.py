@@ -6,6 +6,7 @@ Import only after SimulationApp has been created in the render worker.
 """
 
 from pathlib import Path
+import time
 
 import mujoco
 import numpy as np
@@ -120,8 +121,7 @@ class VisualPuppet:
         self.camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera")
         if self.camera_id < 0:
             raise ValueError("MuJoCo model must contain head_camera")
-        projection = getattr(model, "cam_projection", getattr(model, "cam_orthographic", None))
-        if (projection is not None and projection[self.camera_id] != 0) or np.any(model.cam_sensorsize[self.camera_id]):
+        if model.cam_projection[self.camera_id] != 0 or np.any(model.cam_sensorsize[self.camera_id]):
             raise ValueError("This G1 renderer expects head_camera's perspective fovy projection")
         focal = 20.0  # USD lens units cancel in the aperture/focal ratio
         vertical = 2.0 * focal * np.tan(np.deg2rad(model.cam_fovy[self.camera_id]) / 2.0)
@@ -245,6 +245,7 @@ class IsaacVisual:
                 break
         else:
             raise RuntimeError("Isaac RGB annotator did not initialize in 10 captures")
+        self.submit_s = self.capture_s = self.readback_s = 0.0
 
     def _ground_material(self, floor, model, floor_id, texture_dir):
         """Reuse the compiled MuJoCo checker pixels and repeats per metre."""
@@ -291,19 +292,28 @@ class IsaacVisual:
         UsdShade.MaterialBindingAPI.Apply(floor.GetPrim()).Bind(material)
 
     def render(self, data, *, warming_up=False):
+        started = time.perf_counter()
+        with Sdf.ChangeBlock():
+            self.puppet.update(data)
+            self.scene.update(data)
+        submitted = time.perf_counter()
         self.app.set_setting("/rtx/ecoMode/enabled", False)
-        self.puppet.update(data)
-        self.scene.update(data)
         # Synchronous capture prevents annotator data from belonging to the prior pose.
         # Timeline is stopped and delta_time=0: no Isaac physics is advanced.
         self.rep.orchestrator.step(rt_subframes=1, delta_time=0.0, pause_timeline=True)
         self.app.set_setting("/rtx/ecoMode/enabled", False)
+        captured = time.perf_counter()
         rgba = np.asarray(self.rgb.get_data())
         if rgba.shape[:2] != (480, 640) or rgba.ndim != 3:
             if warming_up:
                 return None
             raise RuntimeError(f"Isaac returned an invalid camera frame: {rgba.shape}")
-        return np.ascontiguousarray(rgba[:, :, :3])
+        rgb = np.ascontiguousarray(rgba[:, :, :3])
+        if not warming_up:
+            self.submit_s += submitted - started
+            self.capture_s += captured - submitted
+            self.readback_s += time.perf_counter() - captured
+        return rgb
 
     def close(self):
         # Isaac 5.0 attach accepts HydraTexture objects; detach expects USD paths.

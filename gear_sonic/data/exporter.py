@@ -156,6 +156,7 @@ class Gr00tDataExporter(LeRobotDataset):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.preencoded_videos = False
         self.video_writers = self.create_video_writer()
 
     @property
@@ -187,6 +188,7 @@ class Gr00tDataExporter(LeRobotDataset):
         tolerance_s: float = 1e-4,
         vcodec: str = "h264",
         overwrite_existing: bool = False,
+        preencoded_videos: bool = False,
     ) -> "Gr00tDataExporter":
         if script_config is None:
             script_config = {}
@@ -231,6 +233,7 @@ class Gr00tDataExporter(LeRobotDataset):
         obj.video_backend = "pyav"
         obj.vcodec = vcodec
         obj.task = task
+        obj.preencoded_videos = preencoded_videos
         obj.image_writer = None
 
         obj.episode_buffer = obj.create_episode_buffer()
@@ -245,6 +248,8 @@ class Gr00tDataExporter(LeRobotDataset):
         return obj
 
     def create_video_writer(self) -> dict[str, VideoWriter]:
+        if self.preencoded_videos:
+            return {}
         video_writers = {}
         for key in self.meta.video_keys:
             video_writers[key] = VideoWriter(
@@ -317,9 +322,22 @@ class Gr00tDataExporter(LeRobotDataset):
         self.episode_buffer = self.create_episode_buffer()
         self.video_writers = self.create_video_writer()
 
-    def save_episode(self, episode_data: dict | None = None) -> None:
-        if not episode_data:
-            episode_buffer = self.episode_buffer
+    def save_preencoded_episode(self, columns: dict, videos: dict, video_stats: dict, task: str) -> None:
+        """Import aligned numeric columns and already encoded videos without decoding them."""
+        length = len(columns["timestamp"])
+        buffer = self.create_episode_buffer()
+        buffer.update(columns)
+        buffer["size"] = length
+        buffer["task"] = [task] * length
+        buffer["frame_index"] = list(range(length))
+        for key in self.meta.video_keys:
+            buffer[key] = [""] * length
+        self.save_episode(buffer, videos, video_stats)
+        self.episode_buffer = self.create_episode_buffer()
+
+    def save_episode(self, episode_data: dict | None = None, videos: dict | None = None,
+                     video_stats: dict | None = None) -> None:
+        episode_buffer = self.episode_buffer if episode_data is None else episode_data
 
         validate_episode_buffer(episode_buffer, self.meta.total_episodes, self.features)
 
@@ -353,9 +371,20 @@ class Gr00tDataExporter(LeRobotDataset):
             k: v for k, v in episode_buffer.items() if k in non_video_features.keys()
         }
         ep_stats = compute_episode_stats(non_vid_ep_buffer, non_video_features)
+        if video_stats:
+            ep_stats.update({key: {name: np.asarray(value) for name, value in stats.items()}
+                             for key, stats in video_stats.items()})
 
         if len(self.meta.video_keys) > 0:
-            video_paths = self.encode_episode_videos(episode_index)
+            if videos is None:
+                video_paths = self.encode_episode_videos(episode_index)
+            else:
+                video_paths = {}
+                for key in self.meta.video_keys:
+                    destination = self.root / self.meta.get_video_file_path(episode_index, key)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(videos[key], destination)
+                    video_paths[key] = str(destination)
             for key in self.meta.video_keys:
                 episode_buffer[key] = video_paths[key]
 
@@ -381,7 +410,7 @@ class Gr00tDataExporter(LeRobotDataset):
         if img_dir.is_dir():
             shutil.rmtree(self.root / "images")
 
-        if not episode_data:
+        if episode_data is None:
             self.episode_buffer = self.create_episode_buffer()
             self.video_writers = self.create_video_writer()
 

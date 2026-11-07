@@ -33,6 +33,7 @@
 #ifndef DEX3_HANDS_HPP
 #define DEX3_HANDS_HPP
 
+#include "simulation_control.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -115,7 +116,6 @@ public:
     // Perform one publish tick; call this at your own cadence from the main class/thread.
     void writeOnce()
     {
-        constexpr double MAX_DELTA_Q = 0.25;
         // Use runtime adjustable max_close_ratio_ instead of constexpr
 
         // Left hand publish with smoothing
@@ -143,12 +143,8 @@ public:
                     for (int i = 0; i < DEX3_MOTOR_MAX; ++i)
                     {
                         const double current_q = statePtr->motor_state()[i].q();
-                        const double desired_q = smoothedCmd.motor_cmd()[i].q();
-                        const double delta = desired_q - current_q;
-                        
-                        // Clamp delta to [-MAX_DELTA_Q, +MAX_DELTA_Q]
-                        const double clamped_delta = std::max(-MAX_DELTA_Q, std::min(MAX_DELTA_Q, delta));
-                        smoothedCmd.motor_cmd()[i].q(current_q + clamped_delta);
+                        smoothedCmd.motor_cmd()[i].q(hand_target(
+                            cmdPtr->motor_cmd()[i].q(), current_q, true, i, max_close_ratio_));
                     }
                 }
                 
@@ -181,12 +177,8 @@ public:
                     for (int i = 0; i < DEX3_MOTOR_MAX; ++i)
                     {
                         const double current_q = statePtr->motor_state()[i].q();
-                        const double desired_q = smoothedCmd.motor_cmd()[i].q();
-                        const double delta = desired_q - current_q;
-                        
-                        // Clamp delta to [-MAX_DELTA_Q, +MAX_DELTA_Q]
-                        const double clamped_delta = std::max(-MAX_DELTA_Q, std::min(MAX_DELTA_Q, delta));
-                        smoothedCmd.motor_cmd()[i].q(current_q + clamped_delta);
+                        smoothedCmd.motor_cmd()[i].q(hand_target(
+                            cmdPtr->motor_cmd()[i].q(), current_q, false, i, max_close_ratio_));
                     }
                 }
                 

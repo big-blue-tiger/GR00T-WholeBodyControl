@@ -7,6 +7,7 @@ cd "$ROOT"
 
 OBJECT_KEY=${OBJECT_KEY:-pickup_table__soap_dispenser_0__001}
 DEVICE=${DEVICE:-cpu}
+CHECKPOINT=${CHECKPOINT:-/home/tide/robot/GRAIL/imports/SONIC/logs_rl/GRAB_Tracking/1104robocasa_carry_table-20261104_134734}
 PREP_PYTHON=/home/tide/miniconda3/envs/grail/bin/python
 SIM_PYTHON=/home/tide/miniconda3/envs/gr00t-sim/bin/python
 DATASET_DIR=/home/tide/robot/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_300
@@ -29,7 +30,7 @@ gnome-terminal --window --title="GRAIL - Simulation" --working-directory="$ROOT"
 
 gnome-terminal --window --title="GRAIL - Policy" --working-directory="$ROOT" -- \
   "$SIM_PYTHON" -m gear_sonic.scripts.run_grail_policy \
-  --checkpoint /home/tide/robot/GRAIL/imports/SONIC/logs_rl/GRAB_Tracking/1020robocasa_carry_table-20261026_164704/model_step_005000.pt \
+  --checkpoint "$CHECKPOINT" \
   --device "$DEVICE" --threads 1
 
 gnome-terminal --window --title="GRAIL - Decoder (press ] then Enter)" \

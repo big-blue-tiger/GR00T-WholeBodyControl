@@ -1,6 +1,5 @@
 """Standalone inference loader for EncoderJointVectorMlpPolicy checkpoints."""
 
-from pathlib import Path
 import pickle
 import types
 
@@ -8,6 +7,8 @@ import numpy as np
 import torch
 from torch import nn
 import yaml
+
+from .checkpoints import resolve_checkpoint
 
 
 class _TrainerMetadata:
@@ -63,11 +64,14 @@ def fsq(latent):
 class GrailPolicy(nn.Module):
     def __init__(self, checkpoint, device="cpu"):
         super().__init__()
-        path = Path(checkpoint).resolve()
+        path = resolve_checkpoint(checkpoint)
+        self.checkpoint = path
         self.config = yaml.safe_load(path.with_name("config.yaml").read_text())
         actor = self.config["algo"]["config"]["actor"]
         cfg = actor["backbone"]["module_config_dict"]
-        dims = [892, *cfg["mlp_hidden_dims"], 66]
+        if (cfg["proprio_input_dim"], cfg["privileged_input_dim"]) != (805, 79):
+            raise ValueError("GRAIL carry requires 805D proprio and 79D task observations")
+        dims = [884, *cfg["mlp_hidden_dims"], 66]
         layers = []
         for i, (a, b) in enumerate(zip(dims, dims[1:])):
             layers.append(nn.Linear(a, b))
@@ -96,7 +100,7 @@ class GrailPolicy(nn.Module):
     def forward(self, proprio, task):
         device = self.latent_mean.device
         p = torch.as_tensor(proprio, dtype=torch.float32, device=device).reshape(-1, 805)
-        t = torch.as_tensor(task, dtype=torch.float32, device=device).reshape(-1, 87)
+        t = torch.as_tensor(task, dtype=torch.float32, device=device).reshape(-1, 79)
         output = self.action_head(torch.cat((p, t), dim=-1))
         # No residual scaling; action_mean in GRAIL is already denormalized.
         return torch.cat(
