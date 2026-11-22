@@ -28,6 +28,8 @@ OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。
 退出时，仿真、策略和 decoder 终端分别按 **Ctrl+C**，相机窗口按 **Q**。
 
+一键启动和分终端启动都默认使用 `gear_sonic/config/grail/apple_2.yaml`。Isaac 从 `gear_sonic/data/scene/deploy/scene_combined_3dgs.usda` 和同目录的 `splats.nurec` 加载 3DGS。MuJoCo 用一块薄盒模拟桌面，顶面高度为 `0.76935 m`，前沿与画面和策略观测中的长桌沿对齐。
+
 ## 分终端启动
 
 ### 终端 1：准备资产并启动仿真
@@ -59,7 +61,7 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 | `--dataset-dir` / `--object-key` | 资产目录与物体标识，准备和仿真时需保持一致 |
 | `--cache-dir` / `--grail-cache-dir` | 资产准备和仿真使用的同一缓存目录 |
 | `--initial-pose-file` | 机器人初始姿态文件 |
-| `--scene-config` | 场景 YAML，配置桌子、物体、接触及 3DGS 背景 |
+| `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用 3DGS 背景和拟合桌面碰撞 |
 | `--grail-seed` | 随机种子，默认 `42` |
 | `--enable-image-publish` | 发布相机图像 |
 | `--render-backend` | `both` 为双渲染，`isaac` 或 `mujoco` 为单渲染 |

@@ -19,18 +19,16 @@ table:
   - 2.0
   - 0.6
   - 0.04
-  top_height_range:
-  - 0.747
-  - 0.747
-# Asset coordinates refer to the USDZ's default prim, including its existing
-# child transform. Rigid transform only: no scale, metres remain metres.
+  top_height_range: [0.7693515, 0.7693515]
+  # Bounds fitted to the scan's Tabletop in the local table frame, in metres.
+  # Keep the front edge at local Y = -0.3 and the reset sampling frame above.
+  collision_bounds_xy: [[-0.720, -0.300], [2.728, 1.018]]
 isaac_scene:
   enabled: true
-  asset_path: gear_sonic/data/scene/3dgs/839951.usdz
-  translation: [4.16, 2.15, 0.342]
-  quaternion_wxyz: [0.0, 0.0, 0.7071067811865476, -0.7071067811865476]
-  # Show the MuJoCo floor/table surfaces in Isaac for alignment debugging.
-  # Visibility only; MuJoCo collisions remain active in either mode.
+  asset_path: gear_sonic/data/scene/deploy/scene_combined_3dgs.usda
+  # Two points along the robot-facing long edge in the authored scene frame.
+  front_edge_xy: [[-4.4, 0.726], [-3.1, 0.7927]]
+  # Show the MuJoCo floor and tabletop in Isaac for alignment debugging.
   show_colliders: false
 object:
   # Quaternion mean of objects/*.pkl root_quat[0, 0] (300 first frames, wxyz).

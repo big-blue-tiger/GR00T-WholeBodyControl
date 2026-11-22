@@ -34,9 +34,11 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--checkpoint` | 策略权重文件或目录。示例直接指定 `model_step_009000.pt`；传入目录时按修改时间选择最新完整 `.pt` |
 | `--initial-pose` | 机器人初始姿态文件 |
 | `--dataset-dir` / `--object-key` | GRAIL 资产目录与物体标识，默认物体为 `pickup_table__soap_dispenser_0__001` |
-| `--scene-config` | 场景配置，默认 `gear_sonic/config/grail/apple_2.yaml` |
+| `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用拟合桌面碰撞；渲染使用 `scene_combined_3dgs.usda` 及同目录的 `splats.nurec` |
 | `--cache-dir` | 资产缓存目录，默认 `outputs/grail_asset_cache` |
 | `--no-release-override` | 关闭默认启用的松手动作旁路 |
+
+采集与实时入口共用同一默认场景。物体沿用原来的 XY 采样范围，在 `0.76935 m` 高的桌面上初始化。渲染读取采集时记录在 `scene.json` 中的场景配置。
 
 采集与实时入口共用新版 GRAIL 的观测及 reference-free sparse command，完整逐项定义见 [观测对齐说明](grail_carry.md#新版-grail-观测与-sparse-command)。仅支持 `805 + 79 = 884` 维 checkpoint：`policy_proprio` 保存 `[N,5,161]`，`policy_task` 保存 `[N,79]`；旧的桌角、8 维接触力和 `drop_button` 不再作为策略输入。`scene.json` 记录实际选中的权重文件。
 

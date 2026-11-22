@@ -1,4 +1,4 @@
-"""Build the existing G1 model plus a thin fixed table and a free RoboCasa body."""
+"""Build the G1 model with the task scene and a free RoboCasa body."""
 
 from pathlib import Path
 import re
@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
+from scipy.spatial.transform import Rotation
 import yaml
 
 from .assets import load_assets
@@ -20,8 +21,15 @@ def load_scene_config(path):
     cfg = yaml.safe_load(Path(path).read_text())
     if cfg["version"] != 1:
         raise ValueError("Scene config version must be 1")
-    if cfg["table"]["size"] != [2.0, 0.6, 0.04] or cfg["object"]["mass"] != 0.1:
-        raise ValueError("This demo requires a 2x0.6x0.04 m table and a 0.1 kg object")
+    table = cfg["table"]
+    if table["size"] != [2.0, 0.6, 0.04] or cfg["object"]["mass"] != 0.1:
+        raise ValueError("This demo requires a 2x0.6x0.04 m table frame and a 0.1 kg object")
+    if "collision_bounds_xy" in table:
+        bounds = np.asarray(table["collision_bounds_xy"], dtype=float)
+        if bounds.shape != (2, 2) or not np.isfinite(bounds).all() or np.any(bounds[1] <= bounds[0]):
+            raise ValueError("table.collision_bounds_xy requires increasing XY bounds")
+        if not np.isclose(bounds[0, 1], -table["size"][1] / 2):
+            raise ValueError("The tabletop collider must start at the observed front edge")
     if (
         len(cfg["robot"]["observation_joint_names"]) != 43
         or len(set(cfg["robot"]["observation_joint_names"])) != 43
@@ -35,12 +43,21 @@ def load_scene_config(path):
         if not np.isfinite(fov) or not 0 < fov < 180:
             raise ValueError("ego_camera.vertical_fov_deg must be finite and between 0 and 180")
     background = cfg.get("isaac_scene", {})
-    if background.get("enabled", False):
+    edge = background.get("front_edge_xy")
+    if edge is not None or background.get("enabled", False):
         # Resolve once in the physics process; the worker may start elsewhere.
         asset = Path(background["asset_path"])
         if not asset.is_absolute():
             asset = Path(__file__).resolve().parents[3] / asset
         background["asset_path"] = str(asset.resolve())
+        if not isinstance(background.get("show_colliders", False), bool):
+            raise ValueError("isaac_scene.show_colliders must be a boolean")
+    if edge is not None:
+        edge = np.asarray(edge, dtype=float)
+        if edge.shape != (2, 2) or not np.isfinite(edge).all() or np.array_equal(edge[0], edge[1]):
+            raise ValueError("isaac_scene.front_edge_xy requires two distinct finite XY points")
+        align_scanned_scene(background, table, edge)
+    elif background.get("enabled", False):
         translation = np.asarray(background["translation"], dtype=float)
         quaternion = np.asarray(background["quaternion_wxyz"], dtype=float)
         if translation.shape != (3,) or not np.isfinite(translation).all():
@@ -48,14 +65,62 @@ def load_scene_config(path):
         if (quaternion.shape != (4,) or not np.isfinite(quaternion).all()
                 or not np.isclose(np.linalg.norm(quaternion), 1, atol=1e-6)):
             raise ValueError("isaac_scene.quaternion_wxyz requires a unit quaternion")
-        if not isinstance(background.get("show_colliders", False), bool):
-            raise ValueError("isaac_scene.show_colliders must be a boolean")
     position = cfg["robot"].get("initial_position_xy")
     if position is not None:
         position = np.asarray(position, dtype=float)
         if position.shape != (2,) or not np.isfinite(position).all():
             raise ValueError("robot.initial_position_xy requires two finite metre values")
     return cfg
+
+
+def align_scanned_scene(background, table, edge):
+    table_rotation = Rotation.from_quat(table["quaternion_wxyz"], scalar_first=True)
+    tangent, inward, up = table_rotation.as_matrix().T
+    if not np.allclose(up, [0, 0, 1]):
+        raise ValueError("The scanned scene requires an upright table frame")
+    source_direction = edge[1] - edge[0]
+    source_yaw = np.arctan2(source_direction[1], source_direction[0])
+    yaw = np.arctan2(tangent[1], tangent[0]) - source_yaw
+    rotation = Rotation.from_euler("z", yaw)
+    # Map the scan's front edge to the existing table-local -Y edge, keeping
+    # the robot approach, object sampling frame and ground elevation fixed.
+    target_midpoint = np.r_[table["position_xy"], 0] - 0.5 * table["size"][1] * inward
+    translation = target_midpoint - rotation.apply(np.r_[edge.mean(axis=0), 0])
+    background["translation"] = translation.tolist()
+    background["quaternion_wxyz"] = rotation.as_quat(scalar_first=True).tolist()
+
+
+def add_room_collisions(root, cfg):
+    background = cfg["isaac_scene"]
+    asset = Path(background["asset_path"])
+    rotation = Rotation.from_quat(background["quaternion_wxyz"], scalar_first=True)
+    translation = np.asarray(background["translation"], dtype=float)
+    layer = asset.read_text()
+    deformable = ET.SubElement(root, "deformable")
+    # The deployed USDA bakes the mesh points into the scene frame. Static
+    # flexes preserve those triangles, including concavities and holes.
+    for name in ("SceneGeometry", "Tabletop"):
+        mesh = re.search(rf'def Mesh "{name}"\s*\([^)]*\)\s*\{{([^}}]+)\}}', layer)
+        if mesh is None or "bool physics:collisionEnabled = 1" not in mesh[1]:
+            raise ValueError(f"{asset} requires an enabled {name} collision mesh")
+        arrays = dict(re.findall(
+            r"(?:point3f|int)\[\]\s+(points|faceVertexIndices|faceVertexCounts)\s*=\s*\[([^\]]+)\]",
+            mesh[1],
+        ))
+        if len(arrays) != 3 or not np.all(np.fromstring(arrays["faceVertexCounts"], sep=",") == 3):
+            raise ValueError(f"{asset}:{name} requires a triangulated mesh")
+        points = arrays["points"].translate(str.maketrans("(),", "   "))
+        vertices = rotation.apply(np.fromstring(points, sep=" ").reshape(-1, 3)) + translation
+        flex = ET.SubElement(
+            deformable, "flex", name=name, body="world", dim="2", radius="0.0001",
+            vertex=numbers(vertices.ravel()), element=arrays["faceVertexIndices"].replace(",", " "),
+        )
+        ET.SubElement(flex, "contact", selfcollide="none", margin="0", friction="1 .005 .0001")
+        if name == "Tabletop":
+            height = float(vertices[0, 2])
+            if not np.allclose(vertices[:, 2], height):
+                raise ValueError(f"{asset}:Tabletop must be horizontal")
+            cfg["table"]["top_height_range"] = [height, height]
 
 
 def add_grasp_contacts(root, parameters):
@@ -133,15 +198,27 @@ def build_scene(robot_scene, scene_config, dataset_dir, object_key, cache_dir):
     assets = ET.SubElement(root, "asset")
     world = ET.SubElement(root, "worldbody")
     table = ET.SubElement(world, "body", name="grail_table", mocap="true")
-    ET.SubElement(
-        table,
-        "geom",
-        name="grail_table_geom",
-        type="box",
-        size="1 .3 .02",
-        rgba=".5 .35 .2 1",
-        friction="1 .005 .0001",
-    )
+    table_config = cfg["table"]
+    bounds = table_config.get("collision_bounds_xy")
+    if bounds is None and cfg.get("isaac_scene", {}).get("front_edge_xy") is not None:
+        add_room_collisions(root, cfg)
+    else:
+        half_size = np.asarray(table_config["size"], dtype=float) / 2
+        center = np.zeros(3)
+        if bounds is not None:
+            lower, upper = np.asarray(bounds)
+            half_size[:2] = (upper - lower) / 2
+            center[:2] = (lower + upper) / 2
+        ET.SubElement(
+            table,
+            "geom",
+            name="grail_table_geom",
+            type="box",
+            size=numbers(half_size),
+            pos=numbers(center),
+            rgba=".5 .35 .2 1",
+            friction="1 .005 .0001",
+        )
     ET.SubElement(
         world,
         "camera",

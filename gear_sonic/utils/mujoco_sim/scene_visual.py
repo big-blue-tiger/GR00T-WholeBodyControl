@@ -99,13 +99,27 @@ def add_gaussian_scene(stage, config):
         raise FileNotFoundError(f"Isaac 3DGS background does not exist: {asset}")
     source = Usd.Stage.Open(str(asset))
     if source is None or not source.GetDefaultPrim():
-        raise ValueError(f"3DGS USDZ requires a default prim: {asset}")
+        raise ValueError(f"3DGS USD requires a default prim: {asset}")
     if not np.isclose(UsdGeom.GetStageMetersPerUnit(source), 1.0):
         raise ValueError("3DGS background must use metres; automatic scaling is disabled")
-    root = UsdGeom.Xform.Define(stage, "/GaussianScene")
-    if not root.GetPrim().GetReferences().AddReference(str(asset)):
-        raise ValueError(f"Could not reference 3DGS background: {asset}")
-    # Gf row-vector convention. The referenced child's authored transform
+    if config.get("front_edge_xy") is not None:
+        # Keep the NuRec field paths and the sidecar's layer-relative anchor.
+        stage.GetRootLayer().subLayerPaths.append(str(asset))
+        scene = stage.GetPrimAtPath(source.GetDefaultPrim().GetPath())
+        root = UsdGeom.Xformable(scene)
+        for prim in Usd.PrimRange(scene):
+            if prim.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI(prim).CreateCollisionEnabledAttr(False)
+            elif prim.IsA(UsdPhysics.Scene):
+                prim.SetActive(False)
+        collision = scene.GetChild("Collision")
+        if collision and config.get("show_colliders", False):
+            UsdGeom.Imageable(collision).MakeVisible()
+    else:
+        root = UsdGeom.Xform.Define(stage, "/GaussianScene")
+        if not root.GetPrim().GetReferences().AddReference(str(asset)):
+            raise ValueError(f"Could not reference 3DGS background: {asset}")
+    # Gf row-vector convention. The child's authored transform
     # composes underneath this placement; there is deliberately no scale op.
     rotation = np.empty(9)
     mujoco.mju_quat2Mat(rotation, np.asarray(config["quaternion_wxyz"], dtype=float))

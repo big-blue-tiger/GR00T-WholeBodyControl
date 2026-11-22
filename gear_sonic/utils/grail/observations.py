@@ -51,6 +51,7 @@ class Observations:
         self.pelvis = model.body("pelvis").id
         self.obj = model.body("grail_object").id
         self.table = model.body("grail_table").id
+        self.table_flex = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_FLEX, "Tabletop")
         self.hand = [model.body(name).id for name in config["hand_frame_links"]]
         # FrameTransformer returns index_1 first in the reference-free scene.
         self.hand_orientation = model.body("right_hand_index_1_link").id
@@ -69,7 +70,7 @@ class Observations:
         wrench = np.empty(6)
         for i in range(data.ncon):
             contact = data.contact[i]
-            a, b = self.model.geom_bodyid[[contact.geom1, contact.geom2]]
+            a, b = [self.model.geom_bodyid[geom] if geom >= 0 else -1 for geom in contact.geom]
             if self.obj not in (a, b):
                 continue
             other = b if a == self.obj else a
@@ -80,7 +81,7 @@ class Observations:
             force *= -1 if a == self.obj else 1
             if other in self.contact_indices:
                 forces[self.contact_indices[other]] += force
-            elif other == self.table:
+            elif other == self.table or (self.table_flex >= 0 and self.table_flex in contact.flex):
                 table_force += force
         return np.linalg.norm(forces, axis=1), float(np.linalg.norm(table_force))
 
