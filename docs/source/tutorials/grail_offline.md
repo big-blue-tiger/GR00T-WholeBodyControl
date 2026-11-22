@@ -1,6 +1,7 @@
 # GRAIL 离线采集与 Isaac 批量渲染
 
 在仓库根目录执行，依次采集轨迹、渲染图像、标注并导出 GR00T N1.7 数据集。
+采集使用的 `.pt` 权重文件和对应训练配置 `config.yaml` 需放在同一目录下。
 
 ## 安装
 
@@ -16,7 +17,7 @@ conda activate gr00t-sim
 ```bash
 python -m gear_sonic.scripts.grail_offline collect \
   --output outputs/my_grail_run \
-  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   --num-envs 100 --num-episodes 200 --cpu-workers 4 \
   --task "Pick up the object from the table, carry it, and release it."
 ```
@@ -31,7 +32,7 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--seed` | 随机种子，默认 `42` |
 | `--device` / `--threads` | 顶层策略推理设备与 PyTorch 线程数，默认 `cuda:0` / `1` |
 | `--task` | 导出数据集使用的任务描述 |
-| `--checkpoint` | 策略权重文件或目录。示例直接指定 `model_step_009000.pt`；传入目录时按修改时间选择最新完整 `.pt` |
+| `--checkpoint` | 策略权重文件或目录，默认使用示例中的 `last.pt`。传入目录时按修改时间选择最新完整 `.pt` |
 | `--initial-pose` | 机器人初始姿态文件 |
 | `--dataset-dir` / `--object-key` | GRAIL 资产目录与物体标识，默认物体为 `pickup_table__soap_dispenser_0__001` |
 | `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用拟合桌面碰撞；渲染使用 `scene_combined_3dgs.usda` 及同目录的 `splats.nurec` |
@@ -105,7 +106,7 @@ python -m gear_sonic.scripts.validate_grail_render \
 ```bash
 python -m gear_sonic.scripts.grail_offline benchmark \
   --output outputs/my_grail_benchmark \
-  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   --num-envs 3 --num-episodes 3 --cpu-workers 3
 ```
 

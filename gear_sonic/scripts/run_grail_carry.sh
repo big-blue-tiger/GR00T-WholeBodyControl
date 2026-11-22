@@ -7,7 +7,9 @@ cd "$ROOT"
 
 OBJECT_KEY=${OBJECT_KEY:-pickup_table__soap_dispenser_0__001}
 DEVICE=${DEVICE:-cpu}
-CHECKPOINT=${CHECKPOINT:-/home/tide/robot/GRAIL/imports/SONIC/logs_rl/GRAB_Tracking/1104robocasa_carry_table-20261104_134734}
+DEFAULT_CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt
+CHECKPOINT=${CHECKPOINT:-$DEFAULT_CHECKPOINT}
+REWARD_VALUE_CHECKPOINT=${REWARD_VALUE_CHECKPOINT:-$DEFAULT_CHECKPOINT}
 PREP_PYTHON=/home/tide/miniconda3/envs/grail/bin/python
 SIM_PYTHON=/home/tide/miniconda3/envs/gr00t-sim/bin/python
 DATASET_DIR=/home/tide/robot/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_300
@@ -25,6 +27,7 @@ gnome-terminal --window --title="GRAIL - Simulation" --working-directory="$ROOT"
   --scene-config gear_sonic/config/grail/apple_2.yaml \
   --object-key "$OBJECT_KEY" \
   --grail-cache-dir /tmp/sonic-grail-assets --grail-seed 42 \
+  --grail-reward-value-checkpoint "$REWARD_VALUE_CHECKPOINT" \
   --enable-image-publish --render-backend both --isaac-headless \
   --grail-log /tmp/grail-episodes.jsonl --verbose-timing
 

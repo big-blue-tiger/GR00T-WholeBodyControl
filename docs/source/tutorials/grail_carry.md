@@ -1,13 +1,14 @@
 # GRAIL G1 抓取搬运启动
 
 以下命令在仓库根目录执行；仿真与策略使用 `gr00t-sim`，资产准备使用 `grail`。
+将策略和预测权重的训练配置 `config.yaml` 放在对应的 `.pt` 文件同目录下。
 
 ## 一键启动
 
 在 GNOME 桌面终端执行，自动准备资产并打开仿真、策略、decoder 和两路相机终端：
 
 ```bash
-DEVICE=cuda:0 CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+DEVICE=cuda:0 CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   bash gear_sonic/scripts/run_grail_carry.sh
 ```
 
@@ -15,7 +16,7 @@ DEVICE=cuda:0 CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocas
 
 ```bash
 OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
-  CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+  CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   bash gear_sonic/scripts/run_grail_carry.sh
 ```
 
@@ -23,12 +24,19 @@ OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
 |---|---|
 | `OBJECT_KEY` | 物体标识，默认 `pickup_table__soap_dispenser_0__001` |
 | `DEVICE` | 顶层策略推理设备，默认 `cpu`，可设为 `cuda:0` |
-| `CHECKPOINT` | 策略权重文件或目录。示例直接指定 `model_step_009000.pt`；传入目录时按修改时间选择最新完整 `.pt` |
+| `CHECKPOINT` | 策略权重文件或目录，默认使用示例中的 `last.pt`。传入目录时按修改时间选择最新完整 `.pt` |
+| `REWARD_VALUE_CHECKPOINT` | `CarryRewardValue` 权重文件或目录，默认使用同一个 `last.pt`。显式指定旧版策略 `model_step_009000.pt` 时仍可使用新版权重显示预测 |
 
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。
 退出时，仿真、策略和 decoder 终端分别按 **Ctrl+C**，相机窗口按 **Q**。
 
 一键启动和分终端启动都默认使用 `gear_sonic/config/grail/apple_2.yaml`。Isaac 从 `gear_sonic/data/scene/deploy/scene_combined_3dgs.usda` 和同目录的 `splats.nurec` 加载 3DGS。MuJoCo 用一块薄盒模拟桌面，顶面高度为 `0.76935 m`，前沿与画面和策略观测中的长桌沿对齐。
+
+## 实时 Reward、Value 与 Advantage (TD)
+
+Decoder 开始 streaming 且仿真完成启动等待后，MuJoCo 窗口左上角的 `CarryRewardValue` 每个控制步更新一次，仿真终端约每秒输出 4 次，并输出超时或跌倒时的最后一组数值。
+
+`Reward` 是模型基于控制步起始状态和该步最后一个物理子步实际使用的 43 维关节位置目标所预测的奖励。`Value` 是起始状态的预测价值。`Advantage (TD)` 按 $\hat r_t + \gamma B_t - \hat V(s_t)$ 计算。正常步的 $B_t$ 为下一状态预测价值，超时时使用本步预测价值，跌倒终止时为零。折扣因子来自预测模型 checkpoint 同目录的 `config.yaml`，示例为 `0.99`。手动重置会清空预测历史。
 
 ## 分终端启动
 
@@ -51,6 +59,7 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
     --scene-config gear_sonic/config/grail/apple_2.yaml \
     --object-key "$OBJECT_KEY" \
     --grail-cache-dir /tmp/sonic-grail-assets --grail-seed 42 \
+    --grail-reward-value-checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
     --enable-image-publish --render-backend both --isaac-headless \
     --grail-log /tmp/grail-episodes.jsonl --verbose-timing
 )
@@ -70,17 +79,18 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 | `--no-enable-onscreen` | 隐藏 MuJoCo 交互窗口 |
 | `--render-fps` | 相机渲染目标帧率，默认 `30` |
 | `--grail-log` / `--verbose-timing` | 任务日志路径与详细计时开关 |
+| `--grail-reward-value-checkpoint` | 启用实时预测，指定含 `CarryRewardValue` 权重的 checkpoint |
 
 ### 终端 2：启动顶层策略
 
 ```bash
 cd /home/tide/robot/GR00T-WholeBodyControl
 /home/tide/miniconda3/envs/gr00t-sim/bin/python -m gear_sonic.scripts.run_grail_policy \
-  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   --device cpu --threads 1
 ```
 
-`--checkpoint` 接受权重文件或目录。示例直接指定 `model_step_009000.pt`，启动时会打印实际加载的路径。传入目录时，按修改时间选取最新完整 `.pt`，忽略隐藏下载临时文件。`--device` 默认为 `cpu`，可改为 `cuda:0`；`--threads` 默认 `1`。追加 `--no-release-override` 可同时关闭强制松手和松手后的 latent 锁定。
+`--checkpoint` 接受权重文件或目录，默认使用示例中的 `last.pt`，启动时会打印实际加载的路径。传入目录时，按修改时间选取最新完整 `.pt`，忽略隐藏下载临时文件。`--device` 默认为 `cpu`，可改为 `cuda:0`；`--threads` 默认 `1`。追加 `--no-release-override` 可同时关闭强制松手和松手后的 latent 锁定。
 
 ### 新版 GRAIL 观测与 sparse command
 

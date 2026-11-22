@@ -19,6 +19,9 @@ from .task import CarryTask
 from .transport import pack, socket, unpack
 
 
+EPISODE_DURATION = 25.0
+
+
 class GrailRuntime:
     def __init__(self, env):
         self.env, self.model, self.data = env, env.mj_model, env.mj_data
@@ -39,6 +42,13 @@ class GrailRuntime:
                 or not np.isfinite(self.initial[key]).all()
             ):
                 raise ValueError(f"Invalid initial pose field {key}")
+        self.reward_value = None
+        if checkpoint := env.config.get("GRAIL_REWARD_VALUE_CHECKPOINT"):
+            from .carry_reward_value import CarryRewardValueMonitor
+
+            self.reward_value = CarryRewardValueMonitor(
+                checkpoint, env, self.observations, EPISODE_DURATION
+            )
         self.context = zmq.Context()
         self.states = socket(
             self.context, zmq.PUB, env.config["GRAIL_OBSERVATION_ENDPOINT"], bind=True
@@ -71,6 +81,8 @@ class GrailRuntime:
         )
         self.task = CarryTask(self.plan, self.planner.pickup_settle_s)
         self.observations.reset()
+        if self.reward_value is not None:
+            self.reward_value.reset()
         self.phase = "flushing"
         self.reset_at = time.monotonic()
         self.next_tick = 0.0
@@ -224,13 +236,19 @@ class GrailRuntime:
                     self.pending = None
                     self.phase = "running"
                     self.next_tick = 0.02
+                    if self.reward_value is not None:
+                        self.reward_value.sample(
+                            self.episode, 0, self.task, self.observations.contact_forces(self.data)
+                        )
                     self.event("running")
             if self.phase == "first_action":
                 # Reset history rather than accumulating repeated wait reads.
                 self.observations.history = None
                 self.publish_observation()
             return False
-        if self.data.time + 1e-9 >= 25:
+        if self.data.time + 1e-9 >= EPISODE_DURATION:
+            if self.reward_value is not None:
+                self.reward_value.finish(self.episode, self.step_count + 1, timeout=True)
             self.event("episode_end", task_events=self.task.events)
             self.reset()
             return False
@@ -241,8 +259,11 @@ class GrailRuntime:
             # describe the same current MuJoCo state.
             mujoco.mj_forward(self.model, self.data)
             self.step_count += 1
-            forces, table = self.observations.contacts(self.data)
-            self.task.update(self.step_count, forces.sum(), table)
+            contacts = self.observations.contact_forces(self.data)
+            forces, table = contacts
+            self.task.update(
+                self.step_count, np.linalg.norm(forces, axis=1).sum(), np.linalg.norm(table)
+            )
             for name, elapsed in self.task.events.items():
                 if name not in self.reported_events:
                     self.event(name, task_seconds=elapsed)
@@ -250,6 +271,8 @@ class GrailRuntime:
             # This observation describes the interval just simulated. Its last
             # action must not be replaced by a newly arriving, unapplied action.
             self.publish_observation()
+            if self.reward_value is not None:
+                self.reward_value.sample(self.episode, self.step_count, self.task, contacts)
             self.next_tick += 0.02
         accepted = False
         if self.pending is not None:

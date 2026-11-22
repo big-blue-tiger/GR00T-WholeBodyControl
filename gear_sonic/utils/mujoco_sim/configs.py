@@ -367,6 +367,8 @@ class SimLoopConfig(BaseConfig):
     grail_observation_endpoint: str = "tcp://127.0.0.1:5560"
     grail_action_endpoint: str = "tcp://127.0.0.1:5561"
     grail_log: Optional[str] = None
+    grail_reward_value_checkpoint: Optional[str] = None
+    """Checkpoint with CarryRewardValue weights for live MuJoCo diagnostics."""
 
     verbose: bool = False
     """Verbose output, override the base config verbose"""

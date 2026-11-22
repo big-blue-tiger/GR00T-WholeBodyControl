@@ -369,6 +369,9 @@ class DefaultEnv:
                 hand_qpos[i + self.num_hand_dof] = self.unitree_bridge.right_hand_cmd.motor_cmd[i].q
         return hand_qpos
 
+    def compute_torques(self):
+        return self.compute_body_torques(), self.compute_hand_torques()
+
     def prepare_obs(self) -> Dict[str, any]:
         obs = {}
         if self.use_floating_root_link:
@@ -442,8 +445,7 @@ class DefaultEnv:
                 self.mj_data.xfrc_applied[self.band_attached_link] = self.elastic_band.Advance(pose)
             else:
                 self.mj_data.xfrc_applied[self.band_attached_link] = np.zeros(6)
-        body_torques = self.compute_body_torques()
-        hand_torques = self.compute_hand_torques()
+        body_torques, hand_torques = self.compute_torques()
         # Use the joint transmission mapping, independent of object free joints.
         self.torques[self.body_actuator_ids] = body_torques
         if self.num_hand_dof > 0:

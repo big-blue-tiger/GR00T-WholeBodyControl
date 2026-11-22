@@ -74,6 +74,7 @@ def main(config: ArgsConfig):
             GRAIL_OBSERVATION_ENDPOINT=config.grail_observation_endpoint,
             GRAIL_ACTION_ENDPOINT=config.grail_action_endpoint,
             GRAIL_LOG=config.grail_log,
+            GRAIL_REWARD_VALUE_CHECKPOINT=config.grail_reward_value_checkpoint,
         )
 
     wbc_config.update(

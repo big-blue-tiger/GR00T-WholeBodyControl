@@ -46,6 +46,11 @@ _checkpoint_pickle.Unpickler = _InferenceUnpickler
 _checkpoint_pickle.load = pickle.load
 
 
+def load_checkpoint(path):
+    # Replace unused trainer metadata with inert objects in trusted checkpoints.
+    return torch.load(path, map_location="cpu", weights_only=False, pickle_module=_checkpoint_pickle)
+
+
 def fsq(latent):
     """vector_quantize_pytorch.FSQ: two tokens, 32 channels, 32 levels.
 
@@ -79,11 +84,7 @@ class GrailPolicy(nn.Module):
             if i < len(dims) - 2:
                 layers.append(nn.SiLU())
         self.action_head = nn.Sequential(*layers)
-        # Only load trusted, explicitly selected checkpoints. Unused trainer
-        # metadata becomes inert objects; TRL/Transformers/Isaac are not imported.
-        ckpt = torch.load(
-            path, map_location="cpu", weights_only=False, pickle_module=_checkpoint_pickle
-        )
+        ckpt = load_checkpoint(path)
         state = ckpt["policy_state_dict"]
         prefix = "actor_module."
         self.action_head.load_state_dict(

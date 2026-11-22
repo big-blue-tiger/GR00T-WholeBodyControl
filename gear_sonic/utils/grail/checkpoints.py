@@ -4,8 +4,8 @@ from pathlib import Path
 
 
 DEFAULT_CHECKPOINT = (
-    Path(__file__).resolve().parents[4] / "GRAIL/imports/SONIC/logs_rl/GRAB_Tracking"
-    / "1104robocasa_carry_table-20261104_134734"
+    Path(__file__).resolve().parents[3] / "gear_sonic_deploy/policy/grail_grasp_policy"
+    / "1119robocasa_carry_table-randomized-20261119_081005/last.pt"
 )
 
 

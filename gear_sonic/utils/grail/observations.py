@@ -65,6 +65,10 @@ class Observations:
         self.last_action[:] = 0
 
     def contacts(self, data):
+        forces, table_force = self.contact_forces(data)
+        return np.linalg.norm(forces, axis=1), float(np.linalg.norm(table_force))
+
+    def contact_forces(self, data):
         forces = np.zeros((8, 3))
         table_force = np.zeros(3)
         wrench = np.empty(6)
@@ -83,7 +87,7 @@ class Observations:
                 forces[self.contact_indices[other]] += force
             elif other == self.table or (self.table_flex >= 0 and self.table_flex in contact.flex):
                 table_force += force
-        return np.linalg.norm(forces, axis=1), float(np.linalg.norm(table_force))
+        return forces, table_force
 
     def proprio(self, data):
         rot = data.xmat[self.pelvis].reshape(3, 3)
