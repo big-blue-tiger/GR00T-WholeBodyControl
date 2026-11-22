@@ -19,17 +19,10 @@ def relative_pose(frame_pos, frame_rot, position, orientation):
 
 
 def table_edge_line(table_pos, table_rot, table_size, pelvis_pos, pelvis_rot, hand_pos, hand_rot):
-    """GRAIL table_edge_line_b: choose a finite edge, encode its infinite line."""
-    hx, hy, hz = np.asarray(table_size) * 0.5
-    midpoints = np.array([[0, -hy, hz], [hx, 0, hz], [0, hy, hz], [-hx, 0, hz]])
-    tangents = np.array([[1., 0, 0], [0, 1., 0], [-1., 0, 0], [0, -1., 0]])
-    lengths = np.array([hx, hy, hx, hy])
-    pelvis_t = table_rot.T @ (pelvis_pos - table_pos)
-    deltas = pelvis_t - midpoints
-    along = np.sum(deltas * tangents, axis=-1).clip(-lengths, lengths)
-    segment_delta = deltas - along[:, None] * tangents
-    edge = np.argmin(np.sum(segment_delta**2, axis=-1))
-    midpoint, direction = midpoints[edge], tangents[edge]
+    """Encode the fixed table-local -Y edge as an infinite line in both frames."""
+    _, hy, hz = np.asarray(table_size) * 0.5
+    midpoint = np.array([0., -hy, hz])
+    direction = np.array([1., 0., 0.])
     values = []
     for origin, orientation in ((pelvis_pos, pelvis_rot), (hand_pos, hand_rot)):
         origin_t = table_rot.T @ (origin - table_pos)
@@ -59,6 +52,8 @@ class Observations:
         self.obj = model.body("grail_object").id
         self.table = model.body("grail_table").id
         self.hand = [model.body(name).id for name in config["hand_frame_links"]]
+        # FrameTransformer returns index_1 first in the reference-free scene.
+        self.hand_orientation = model.body("right_hand_index_1_link").id
         self.contact_ids = [model.body(name).id for name in config["contact_links"]]
         self.contact_indices = {body: i for i, body in enumerate(self.contact_ids)}
         self.history = None
@@ -79,9 +74,9 @@ class Observations:
                 continue
             other = b if a == self.obj else a
             mujoco.mj_contactForce(self.model, data, i, wrench)
-            # frame rows are contact axes. Sum world vectors per object/link
-            # pair before taking norms, matching force_matrix_w aggregation.
-            force = contact.frame.reshape(3, 3).T @ wrench[:3]
+            # Isaac Lab's force_matrix_w sums world-frame normal forces per pair.
+            normal = contact.frame.reshape(3, 3)[0]
+            force = wrench[0] * normal
             force *= -1 if a == self.obj else 1
             if other in self.contact_indices:
                 forces[self.contact_indices[other]] += force
@@ -120,7 +115,7 @@ class Observations:
     def privileged(self, data, task):
         pelvis_pos, pelvis_rot = data.xpos[self.pelvis], data.xmat[self.pelvis].reshape(3, 3)
         hand_pos = data.xpos[self.hand].mean(axis=0)
-        hand_rot = data.xmat[self.hand[0]].reshape(3, 3)
+        hand_rot = data.xmat[self.hand_orientation].reshape(3, 3)
         obj_pos, obj_rot = data.xpos[self.obj], data.xmat[self.obj].reshape(3, 3)
         edge = (
             np.zeros(12) if task.playing else table_edge_line(
@@ -138,15 +133,16 @@ class Observations:
                 )
             )
 
+        goal_visible = np.linalg.norm(pelvis_pos[:2] - obj_pos[:2]) < 1.5
         release = (
             goal(task.plan.final_position, task.plan.final_quaternion)
-            if task.playing
+            if task.playing and goal_visible
             else np.zeros(18)
         )
         carry = (
-            np.zeros(18)
-            if task.playing
-            else goal(task.plan.carry_position, task.plan.carry_quaternion)
+            goal(task.plan.carry_position, task.plan.carry_quaternion)
+            if not task.playing and goal_visible
+            else np.zeros(18)
         )
         forces, _ = self.contacts(data)
         sparse = task.command(pelvis_pos)

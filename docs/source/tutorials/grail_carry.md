@@ -7,13 +7,15 @@
 在 GNOME 桌面终端执行，自动准备资产并打开仿真、策略、decoder 和两路相机终端：
 
 ```bash
-bash gear_sonic/scripts/run_grail_carry.sh
+CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+  bash gear_sonic/scripts/run_grail_carry.sh
 ```
 
 更换物体或策略推理设备：
 
 ```bash
 OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
+  CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
   bash gear_sonic/scripts/run_grail_carry.sh
 ```
 
@@ -21,7 +23,7 @@ OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
 |---|---|
 | `OBJECT_KEY` | 物体标识，默认 `pickup_table__soap_dispenser_0__001` |
 | `DEVICE` | 顶层策略推理设备，默认 `cpu`，可设为 `cuda:0` |
-| `CHECKPOINT` | `.pt` 文件或权重目录，默认 `1104robocasa_carry_table-20261104_134734` 目录，自动选择修改时间最新的完整 `.pt` |
+| `CHECKPOINT` | 策略权重文件或目录。示例直接指定 `model_step_009000.pt`；传入目录时按修改时间选择最新完整 `.pt` |
 
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。
 退出时，仿真、策略和 decoder 终端分别按 **Ctrl+C**，相机窗口按 **Q**。
@@ -72,11 +74,11 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 ```bash
 cd /home/tide/robot/GR00T-WholeBodyControl
 /home/tide/miniconda3/envs/gr00t-sim/bin/python -m gear_sonic.scripts.run_grail_policy \
-  --checkpoint /home/tide/robot/GRAIL/imports/SONIC/logs_rl/GRAB_Tracking/1104robocasa_carry_table-20261104_134734 \
+  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
   --device cpu --threads 1
 ```
 
-`--checkpoint` 接受权重文件或目录；省略时也使用上述目录。目录按修改时间选取最新完整 `.pt`，忽略隐藏下载临时文件；当前为 `last.pt`（内部 `global_step=6200`），启动时打印实际路径。`--device` 默认为 `cpu`，可改为 `cuda:0`；`--threads` 默认 `1`。追加 `--no-release-override` 可同时关闭强制松手和松手后的 latent 锁定。
+`--checkpoint` 接受权重文件或目录。示例直接指定 `model_step_009000.pt`，启动时会打印实际加载的路径。传入目录时，按修改时间选取最新完整 `.pt`，忽略隐藏下载临时文件。`--device` 默认为 `cpu`，可改为 `cuda:0`；`--threads` 默认 `1`。追加 `--no-release-override` 可同时关闭强制松手和松手后的 latent 锁定。
 
 ### 新版 GRAIL 观测与 sparse command
 
@@ -89,20 +91,20 @@ cd /home/tide/robot/GR00T-WholeBodyControl
 | 区间 | 观测 | 定义 |
 |---|---|---|
 | `[0:10]` | `object_bps` | 物体 10 维 BPS |
-| `[10:22]` | `table_edge_line_b` | pelvis 选最近有限桌沿；同一条边延长为无限直线，分别编码 pelvis/手坐标系的最近点与单位切向 `[p_B,d_B,p_H,d_H]` |
+| `[10:22]` | `table_edge_line_b` | 固定取桌子局部 `-Y` 边，切向为局部 `+X`。将该边延长为无限直线，分别编码 pelvis 和手坐标系的最近点与单位切向 `[p_B,d_B,p_H,d_H]` |
 | `[22:25]` | `object_pos_b` | 物体原点在 pelvis 坐标系的位置 |
 | `[25:31]` | `object_ori_b_6d` | 相对旋转矩阵前两列，按行展开 |
 | `[31:40]` | `hand_object_transform_6d` | 物体在手坐标系的 3 维位置与 6 维旋转 |
-| `[40:41]` | `hand_object_contact_count` | 配置的右手 8 个接触 link 中，任一合力模长 `> 0.01 N` 时为 1，否则为 0 |
+| `[40:41]` | `hand_object_contact_count` | 配置的右手 8 个接触 link 中，任一 link 的法向合力模长 `> 0.01 N` 时为 1，否则为 0 |
 | `[41:59]` | `target_object_poses_6d` | 最终目标分别相对当前 pelvis/手的位姿，各 9 维 |
 | `[59:77]` | `target_object_carry_poses_6d` | carry 目标分别相对当前 pelvis/手的位姿，各 9 维 |
 | `[77:79]` | sparse command | `[dx, dyaw]`，单位为米、弧度 |
 
-手坐标系原点为右手 thumb_2、index_1、middle_1 三个 link 原点的平均位置，方向取 thumb_2。物体与目标均使用实时物理状态转换到坐标系，四元数约定为 `wxyz`。
+手坐标系原点为右手 thumb_2、index_1、middle_1 三个 link 原点的平均位置，方向取 index_1。物体与目标均使用实时物理状态转换到坐标系，四元数约定为 `wxyz`。
 
-拾取前及拾取后的 2 秒等待期保留桌沿和 carry 目标，最终目标置零；从播放起始拍开始，桌沿和 carry 目标置零，最终目标生效。后续丢失接触不回退阶段。机器人和物体重置高度补偿均为 `0.001 m`，目标不加该补偿。
+拾取前及拾取后的 2 秒等待期启用桌沿和 carry 目标，最终目标置零。从播放起始拍开始，桌沿和 carry 目标置零，启用最终目标。机器人根节点与物体的实时 XY 距离达到 `1.5 m` 时，两个目标均置零。后续丢失接触不回退阶段。机器人和物体重置高度补偿均为 `0.001 m`，目标不加该补偿。
 
-手合力 `>= 0.1 N` 且桌面合力 `< 0.1 N` 连续 3 拍后确认拾取，再等待 2 秒开始固定 25 Hz 规划时钟。`dx = min(||base_goal_xy - pelvis_xy||₂, 0.15)` 每拍在线计算；`dyaw` 在规划转弯帧内取完整的最短有符号转角，其余帧为零。命令只在拾取后且当前有手接触时有效，连续 3 拍失联后持续归零；不除以控制周期、不使用旧的前瞻轨迹投影。规划走完后仍按当前位置计算 `dx`。
+按物体与各 link 或桌面的配对在世界坐标系内累加法向力后取模。各手部 link 的模长之和 `>= 0.1 N` 且桌面的模长 `< 0.1 N` 连续 3 拍后确认拾取，再等待 2 秒开始固定 25 Hz 规划时钟。`dx = min(||base_goal_xy - pelvis_xy||₂, 0.15)` 每拍在线计算；`dyaw` 在规划转弯帧内取完整的最短有符号转角，其余帧为零。命令只在拾取后且当前有手接触时有效，连续 3 拍失联后持续归零；不除以控制周期、不使用旧的前瞻轨迹投影。规划走完后仍按当前位置计算 `dx`。
 
 走完规划并保持 1.2 秒后，独立的 `release_requested` 请求将两个手部 action 设为 `-1`。实时策略入口同时锁定松手请求前最后一拍已发送的 64 维 latent 和 FSQ token，此后不再执行策略前向推理，持续向 decoder 发送固定 token 并保持双手打开，直至新 episode 重置后恢复策略更新。上一拍 action 历史也使用固定 latent；decoder 仍根据实时本体观测运行，关节目标不会被锁死。若策略进程重启后首包已请求松手，则先推理一次作为锁定值。
 

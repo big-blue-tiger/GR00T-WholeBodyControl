@@ -16,7 +16,7 @@ conda activate gr00t-sim
 ```bash
 python -m gear_sonic.scripts.grail_offline collect \
   --output outputs/my_grail_run \
-  --checkpoint /home/tide/robot/GRAIL/imports/SONIC/logs_rl/GRAB_Tracking/1104robocasa_carry_table-20261104_134734 \
+  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
   --num-envs 100 --num-episodes 200 --cpu-workers 4 \
   --task "Pick up the object from the table, carry it, and release it."
 ```
@@ -31,7 +31,8 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--seed` | 随机种子，默认 `42` |
 | `--device` / `--threads` | 顶层策略推理设备与 PyTorch 线程数，默认 `cuda:0` / `1` |
 | `--task` | 导出数据集使用的任务描述 |
-| `--checkpoint` / `--initial-pose` | 权重文件或目录与机器人初始姿态文件；默认从 `1104robocasa_carry_table-20261104_134734` 目录按修改时间选最新完整 `.pt`，当前为 `last.pt` |
+| `--checkpoint` | 策略权重文件或目录。示例直接指定 `model_step_009000.pt`；传入目录时按修改时间选择最新完整 `.pt` |
+| `--initial-pose` | 机器人初始姿态文件 |
 | `--dataset-dir` / `--object-key` | GRAIL 资产目录与物体标识，默认物体为 `pickup_table__soap_dispenser_0__001` |
 | `--scene-config` | 场景配置，默认 `gear_sonic/config/grail/apple_2.yaml` |
 | `--cache-dir` | 资产缓存目录，默认 `outputs/grail_asset_cache` |
@@ -97,7 +98,9 @@ python -m gear_sonic.scripts.validate_grail_render \
 
 ```bash
 python -m gear_sonic.scripts.grail_offline benchmark \
-  --output outputs/my_grail_benchmark --num-envs 3 --num-episodes 3 --cpu-workers 3
+  --output outputs/my_grail_benchmark \
+  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+  --num-envs 3 --num-episodes 3 --cpu-workers 3
 ```
 
 渲染测速，使用前 3 条轨迹、3 个独立 Isaac 进程：
