@@ -115,7 +115,7 @@ def receive(connection):
 
 def collect(args):
     import torch
-    from .policy import GrailPolicy, finger_targets, fsq
+    from .policy import GrailActor, GrailPolicy, finger_targets
     from .checkpoints import resolve_checkpoint
 
     if args.num_envs < 1 or args.cpu_workers < 1 or args.num_episodes < args.num_envs:
@@ -129,6 +129,7 @@ def collect(args):
     torch.set_num_threads(args.threads)
     policy = GrailPolicy(args.checkpoint, args.device)
     policy(np.zeros((args.num_envs, 5, 161)), np.zeros((args.num_envs, 79)))
+    actor = GrailActor(policy, release_override=not args.no_release_override)
     ctx = mp.get_context("spawn")
     count = min(args.cpu_workers, args.num_envs)
     connections, processes, env_workers = [], [], {}
@@ -156,18 +157,12 @@ def collect(args):
         peak_gpu = gpu_memory()
         while snapshots:
             tick = time.perf_counter()
-            proprio = np.stack([s["proprio"] for s in snapshots])
-            task = np.stack([s["task"] for s in snapshots])
-            raw = policy(proprio, task)
-            tokens = fsq(raw[:, :64]).cpu().numpy()
-            experts = raw.cpu().numpy().copy()
-            if not args.no_release_override:
-                release = np.array([s["release_requested"] for s in snapshots], dtype=bool)
-                experts[release, 64:] = -1
+            experts = []
             actions, requests = [], []
-            for sample, token, expert in zip(snapshots, tokens, experts):
+            for sample, (expert, token) in zip(snapshots, actor.act_batch(snapshots)):
                 left, right = finger_targets(expert, policy.config)
                 action = np.concatenate((token, left, right))
+                experts.append(expert)
                 actions.append(action)
                 requests.append(dict(sample["request"], action=action.tolist()))
             timings["policy_s"] += time.perf_counter() - tick

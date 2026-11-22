@@ -94,7 +94,7 @@ class OfflineEnvironment:
             angular=proprio[-1, 89:92].tolist(), hand_q=self.data.qpos[self.qadr[29:]].tolist(),
         )
         self.timing["observation_s"] += time.perf_counter() - start
-        return dict(env_id=self.env_id, proprio=proprio, task=task, request=request,
+        return dict(env_id=self.env_id, episode_id=self.episode, proprio=proprio, task=task, request=request,
                     release_requested=bool(self.task.release_requested))
 
     def advance(self, reply, expert, action):

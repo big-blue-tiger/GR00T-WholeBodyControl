@@ -7,7 +7,7 @@
 在 GNOME 桌面终端执行，自动准备资产并打开仿真、策略、decoder 和两路相机终端：
 
 ```bash
-CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
+DEVICE=cuda:0 CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt \
   bash gear_sonic/scripts/run_grail_carry.sh
 ```
 

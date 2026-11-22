@@ -42,7 +42,8 @@ def parser():
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--task", default="Pick up the object from the table, carry it, and release it.")
-    p.add_argument("--no-release-override", action="store_true")
+    p.add_argument("--no-release-override", action="store_true",
+                   help="Disable forced-open hands and latent hold on release requests")
     commands.add_parser("benchmark", parents=[p], add_help=False,
                         help="collect trajectories and report collection throughput")
     p = commands.add_parser("render")

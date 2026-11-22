@@ -36,13 +36,15 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--dataset-dir` / `--object-key` | GRAIL 资产目录与物体标识，默认物体为 `pickup_table__soap_dispenser_0__001` |
 | `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用拟合桌面碰撞；渲染使用 `scene_combined_3dgs.usda` 及同目录的 `splats.nurec` |
 | `--cache-dir` | 资产缓存目录，默认 `outputs/grail_asset_cache` |
-| `--no-release-override` | 关闭默认启用的松手动作旁路 |
+| `--no-release-override` | 同时关闭强制张开双手和松手后的 latent 锁定 |
 
 采集与实时入口共用同一默认场景。物体沿用原来的 XY 采样范围，在 `0.76935 m` 高的桌面上初始化。渲染读取采集时记录在 `scene.json` 中的场景配置。
 
 采集与实时入口共用新版 GRAIL 的观测及 reference-free sparse command，完整逐项定义见 [观测对齐说明](grail_carry.md#新版-grail-观测与-sparse-command)。仅支持 `805 + 79 = 884` 维 checkpoint：`policy_proprio` 保存 `[N,5,161]`，`policy_task` 保存 `[N,79]`；旧的桌角、8 维接触力和 `drop_button` 不再作为策略输入。`scene.json` 记录实际选中的权重文件。
 
-拾取稳定 3 拍并等待 2 秒后开始播放；每拍按当前 pelvis 到固定 base 目标的 XY 距离计算 `dx`，上限 `0.15 m`，转弯帧内 `dyaw` 取规划的完整转角。阶段切换、接触门控与实时入口相同。最后松手旁路保留，通过独立的 `release_requested` 字段控制并写入轨迹；`--no-release-override` 仅关闭手部强制打开，不修改策略观测或 sparse command。
+拾取稳定 3 拍并等待 2 秒后开始播放；每拍按当前 pelvis 到固定 base 目标的 XY 距离计算 `dx`，上限 `0.15 m`，转弯帧内 `dyaw` 取规划的完整转角。阶段切换、接触门控与实时入口相同。
+
+松手逻辑也与实时入口一致。收到 `release_requested` 后，该环境锁定上一拍的 latent 和 FSQ token，持续张开双手，并暂停该环境的顶层策略推理，直至下一轮复位。decoder 继续按每拍的本体状态生成关节目标。`release_requested` 和实际使用的动作写入轨迹。
 
 默认资产目录仍为本机已有的 `pickup_table_slowturn_300`。若要换用训练使用的 `pickup_table_slowturn_1600_no_release`，下载后通过 `--dataset-dir` 指定；采集不读取机器人参考 motion。
 

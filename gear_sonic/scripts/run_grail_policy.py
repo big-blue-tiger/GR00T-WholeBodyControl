@@ -8,40 +8,9 @@ import numpy as np
 import torch
 import zmq
 
-from gear_sonic.utils.grail.policy import GrailPolicy, finger_targets, fsq
+from gear_sonic.utils.grail.policy import GrailActor, GrailPolicy, finger_targets
 from gear_sonic.utils.grail.checkpoints import DEFAULT_CHECKPOINT
 from gear_sonic.utils.grail.transport import pack, socket, unpack
-
-
-class GrailActor:
-    """Hold the last decoder latent from release until the episode resets."""
-
-    def __init__(self, policy, release_override=True):
-        self.policy = policy
-        self.release_override = release_override
-        self.episode_id = None
-        self.last_raw = self.last_token = None
-        self.released = False
-
-    def act(self, packet):
-        if packet["episode_id"] != self.episode_id:
-            self.episode_id = packet["episode_id"]
-            self.last_raw = self.last_token = None
-            self.released = False
-
-        self.released |= self.release_override and packet["release_requested"]
-        # On the first release request, reuse the last published latent rather
-        # than evaluating a new one. If the first packet already requests
-        # release (e.g. actor restart), evaluate once to initialize the hold.
-        if not self.released or self.last_raw is None:
-            action = self.policy(packet["proprio"], packet["task"])
-            self.last_token = fsq(action[:, :64])[0].cpu().numpy().copy()
-            self.last_raw = action[0].cpu().numpy().copy()
-        if self.released:
-            # Keep the raw latent used by proprio history consistent with the
-            # frozen FSQ token, while holding both open-hand primitives.
-            self.last_raw[64:66] = -1.0
-        return self.last_raw.copy(), self.last_token.copy()
 
 
 def main():

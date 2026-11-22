@@ -1,5 +1,6 @@
 """Standalone inference loader for EncoderJointVectorMlpPolicy checkpoints."""
 
+from dataclasses import dataclass
 import pickle
 import types
 
@@ -107,6 +108,58 @@ class GrailPolicy(nn.Module):
             (output[:, :64] * (self.latent_std + self.eps) + self.latent_mean, output[:, 64:]),
             dim=-1,
         )
+
+
+@dataclass
+class _EpisodeAction:
+    episode_id: str | int
+    released: bool = False
+    raw: np.ndarray | None = None
+    token: np.ndarray | None = None
+
+
+class GrailActor:
+    """Keep an independent latent hold for each environment until it resets."""
+
+    def __init__(self, policy, release_override=True):
+        self.policy = policy
+        self.release_override = release_override
+        self._states = {}
+
+    def act(self, packet):
+        return self.act_batch([packet])[0]
+
+    def act_batch(self, packets):
+        states, pending = [], []
+        for packet in packets:
+            env_id = packet.get("env_id", 0)
+            episode_id = packet["episode_id"]
+            state = self._states.get(env_id)
+            if state is None or state.episode_id != episode_id:
+                state = self._states[env_id] = _EpisodeAction(episode_id)
+            state.released |= self.release_override and packet["release_requested"]
+            states.append(state)
+            # An initial packet that already requests release needs one action
+            # to seed the hold. Otherwise use the last action before release.
+            if not state.released or state.raw is None:
+                pending.append((packet, state))
+
+        if pending:
+            proprio = np.stack([packet["proprio"] for packet, _ in pending])
+            task = np.stack([packet["task"] for packet, _ in pending])
+            raw = self.policy(proprio, task)
+            tokens = fsq(raw[:, :64]).cpu().numpy()
+            for (_, state), action, token in zip(pending, raw.cpu().numpy(), tokens):
+                state.raw = action.copy()
+                state.token = token.copy()
+
+        results = []
+        for state in states:
+            raw = state.raw.copy()
+            if state.released:
+                raw[64:66] = -1.0
+            results.append((raw, state.token.copy()))
+        return results
 
 
 def finger_targets(action, config):
