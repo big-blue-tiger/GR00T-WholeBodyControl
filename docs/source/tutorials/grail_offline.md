@@ -61,7 +61,9 @@ python -m gear_sonic.scripts.grail_offline render \
 | `--resume` | 续跑：跳过源轨迹和配置匹配的完整结果，重新生成其余结果 |
 | `--overwrite` | 覆盖已有渲染结果，与 `--resume` 互斥 |
 
-输出为 640×480、50 FPS 的 `ego_view.mp4`；50 FPS 是视频时间轴，实际渲染不限速。采集环境数与渲染并发数独立设置。
+第一人称 RGB 视频使用与实时推理相同的 D435i 模拟配置。新采集把相机参数保存到 `model.mjb`。用旧默认相机采集的轨迹可以直接重渲染，旧视频可用 `--resume` 或 `--overwrite` 更新。[实时推理教程](grail_carry.md)
+
+输出为 640×480、50 FPS 的 `ego_view.mp4`。视频逐帧对应 50 Hz 的策略轨迹，实际渲染不限速。采集环境数与渲染并发数独立设置。
 
 ## 标注与导出
 

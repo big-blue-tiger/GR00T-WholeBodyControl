@@ -219,9 +219,10 @@ def build_scene(robot_scene, scene_config, dataset_dir, object_key, cache_dir):
     add_grasp_contacts(root, cfg.get("grasp_contact"))
     model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     if "ego_camera" in cfg:
-        # Set before the MJB snapshot is exported. Both renderers consume this
-        # same model; Isaac derives its lens apertures from cam_fovy.
-        model.cam_fovy[model.camera("head_camera").id] = cfg["ego_camera"]["vertical_fov_deg"]
+        # Custom scene configs can still select a symmetric perspective camera.
+        camera_id = model.camera("head_camera").id
+        model.cam_sensorsize[camera_id] = 0
+        model.cam_fovy[camera_id] = float(cfg["ego_camera"]["vertical_fov_deg"])
     model.opt.timestep = 0.005
     # G1_43DOF_CFG sets armature explicitly and has no passive dry friction.
     # The legacy MJCF's .01 armature/.05 damping/.1-.2 friction otherwise

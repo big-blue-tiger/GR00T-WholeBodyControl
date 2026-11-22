@@ -16,6 +16,7 @@ from .scene_visual import SceneVisual, add_gaussian_scene
 
 
 ROBOT_SUBTREE = "/g1_29dof_with_hand_rev_1_0"
+EGO_SIZE = (640, 480)
 
 
 def world_matrix(position, rotation):
@@ -35,10 +36,23 @@ def _joint_frame(joint, side):
     return world_matrix(position, rotation)
 
 
+def _centered_capture(focal_px, principal_offset_px):
+    """Return the centered frustum and output-to-capture pixel transform."""
+    size = np.asarray(EGO_SIZE)
+    focal = float(max(focal_px))
+    scale = focal / focal_px
+    # Cover the offset window at native pixel density, with dimensions aligned
+    # to 32 pixels. Use square pixels so Hydra need not conform the aperture.
+    capture = 32 * np.ceil(scale * (size + 2 * np.abs(principal_offset_px)) / 32).astype(int)
+    principal = (size - 1) / 2 + principal_offset_px
+    transform = np.column_stack((np.diag(scale), (capture - 1) / 2 - scale * principal))
+    return (int(capture[0]), int(capture[1])), focal, transform
+
+
 class VisualPuppet:
     """Pure USD setup/pose mapping, also usable for numerical alignment checks."""
 
-    def __init__(self, stage, model, asset_path=None):
+    def __init__(self, stage, model, asset_path=None, *, centered_camera=False):
         self.stage = stage
         self.model = model
         if asset_path is None:
@@ -121,13 +135,34 @@ class VisualPuppet:
         self.camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera")
         if self.camera_id < 0:
             raise ValueError("MuJoCo model must contain head_camera")
-        if model.cam_projection[self.camera_id] != 0 or np.any(model.cam_sensorsize[self.camera_id]):
-            raise ValueError("This G1 renderer expects head_camera's perspective fovy projection")
+        if model.cam_projection[self.camera_id] != 0:
+            raise ValueError("This G1 renderer expects a perspective head_camera")
         focal = 20.0  # USD lens units cancel in the aperture/focal ratio
-        vertical = 2.0 * focal * np.tan(np.deg2rad(model.cam_fovy[self.camera_id]) / 2.0)
         self.camera.CreateFocalLengthAttr(focal)
+        self.capture_size = EGO_SIZE
+        self.output_to_capture = None
+        sensor = model.cam_sensorsize[self.camera_id]
+        if sensor.any():
+            fx, fy, offset_x, offset_y = model.cam_intrinsic[self.camera_id]
+            if centered_camera:
+                # Keep the NuRec capture symmetric. Restore the calibrated
+                # principal point after RTX has composited the splats and meshes.
+                pixels_per_unit = np.asarray(EGO_SIZE) / sensor
+                focal_px = pixels_per_unit * (fx, fy)
+                principal_offset_px = pixels_per_unit * (-offset_x, -offset_y)
+                self.capture_size, capture_focal, self.output_to_capture = _centered_capture(
+                    focal_px, principal_offset_px,
+                )
+                horizontal, vertical = focal / capture_focal * np.asarray(self.capture_size)
+            else:
+                horizontal, vertical = focal * sensor / (fx, fy)
+                self.camera.CreateHorizontalApertureOffsetAttr(float(focal * offset_x / fx))
+                self.camera.CreateVerticalApertureOffsetAttr(float(-focal * offset_y / fy))
+        else:
+            vertical = 2.0 * focal * np.tan(np.deg2rad(model.cam_fovy[self.camera_id]) / 2.0)
+            horizontal = vertical * EGO_SIZE[0] / EGO_SIZE[1]
         self.camera.CreateVerticalApertureAttr(float(vertical))
-        self.camera.CreateHorizontalApertureAttr(float(vertical * 640 / 480))
+        self.camera.CreateHorizontalApertureAttr(float(horizontal))
         self.camera.CreateClippingRangeAttr(Gf.Vec2f(
             float(model.vis.map.znear * model.stat.extent),
             float(model.vis.map.zfar * model.stat.extent),
@@ -188,9 +223,10 @@ class IsaacVisual:
         app.set_setting("/rtx/ecoMode/enabled", False)
         omni.usd.get_context().new_stage()
         stage = omni.usd.get_context().get_stage()
-        self.puppet = VisualPuppet(stage, model)
+        has_gaussians = bool(scene_config and scene_config.get("enabled", False))
+        self.puppet = VisualPuppet(stage, model, centered_camera=has_gaussians)
         show_colliders = True
-        if scene_config and scene_config.get("enabled", False):
+        if has_gaussians:
             for name, value in add_gaussian_scene(stage, scene_config).items():
                 app.set_setting("/" + name.replace(":", "/"), value)
             show_colliders = scene_config.get("show_colliders", False)
@@ -216,7 +252,7 @@ class IsaacVisual:
         light.CreateIntensityAttr(1000)
         self.puppet.update(initial)
         rep.orchestrator.set_capture_on_play(False)
-        self.product = rep.create.render_product("/EgoCamera", (640, 480))
+        self.product = rep.create.render_product("/EgoCamera", self.puppet.capture_size)
         self.product_path = self.product.path
         self.rgb = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb.attach([self.product_path])
@@ -304,11 +340,16 @@ class IsaacVisual:
         self.app.set_setting("/rtx/ecoMode/enabled", False)
         captured = time.perf_counter()
         rgba = np.asarray(self.rgb.get_data())
-        if rgba.shape[:2] != (480, 640) or rgba.ndim != 3:
+        if rgba.ndim != 3 or rgba.shape[:2] != self.puppet.capture_size[::-1] or rgba.shape[2] < 3:
             if warming_up:
                 return None
             raise RuntimeError(f"Isaac returned an invalid camera frame: {rgba.shape}")
         rgb = np.ascontiguousarray(rgba[:, :, :3])
+        if self.puppet.output_to_capture is not None:
+            import cv2
+
+            rgb = cv2.warpAffine(rgb, self.puppet.output_to_capture, EGO_SIZE,
+                                 flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR)
         if not warming_up:
             self.submit_s += submitted - started
             self.capture_s += captured - submitted

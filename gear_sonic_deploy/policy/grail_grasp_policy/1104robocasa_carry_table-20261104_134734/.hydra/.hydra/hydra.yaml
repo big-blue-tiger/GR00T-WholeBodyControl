@@ -1,0 +1,190 @@
+hydra:
+  run:
+    dir: ${save_dir}
+  sweep:
+    dir: ${save_dir}
+    subdir: ${hydra.job.num}
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  sweeper:
+    _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
+    max_batch_size: null
+    params: null
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+    hydra_help: ???
+  hydra_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][HYDRA] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    loggers:
+      logging_example:
+        level: DEBUG
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  env: {}
+  mode: RUN
+  searchpath: []
+  callbacks: {}
+  output_subdir: .hydra
+  overrides:
+    hydra:
+    - hydra.mode=RUN
+    task:
+    - +exp=manager/universal_token/distill/robocasa_carry_table
+    - headless=True
+    - num_envs=6144
+    - experiment_name=1104robocasa_carry_table
+    - manager_env.config.object_usd_path=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/object_usd
+    - manager_env.commands.motion.motion_lib_cfg.motion_file=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/robot
+    - manager_env.commands.motion.motion_lib_cfg.object_motion_file=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/objects
+    - manager_env.commands.motion.motion_lib_cfg.bps_dir=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/bps
+    - manager_env.commands.motion.motion_lib_cfg.asset.assetRoot=/home/GRAIL/imports/SONIC/gear_sonic/data/assets/robot_description/mjcf/
+    - algo.config.teacher_checkpoint=/home/GRAIL/imports/SONIC/models/pnp_table/last.pt
+    - algo.config.num_learning_iterations=30000
+    - algo.config.ppo_bc_loss_schedule.adaptive_after_iteration=1000
+    - ++manager_env.config.gpu_collision_stack_size_exp=31
+    - algo.config.ppo_bc_loss_schedule.bc_min_coef=0.06
+  job:
+    name: train_agent_trl
+    chdir: false
+    override_dirname: ++manager_env.config.gpu_collision_stack_size_exp=31,+exp=manager/universal_token/distill/robocasa_carry_table,algo.config.num_learning_iterations=30000,algo.config.ppo_bc_loss_schedule.adaptive_after_iteration=1000,algo.config.ppo_bc_loss_schedule.bc_min_coef=0.06,algo.config.teacher_checkpoint=/home/GRAIL/imports/SONIC/models/pnp_table/last.pt,experiment_name=1104robocasa_carry_table,headless=True,manager_env.commands.motion.motion_lib_cfg.asset.assetRoot=/home/GRAIL/imports/SONIC/gear_sonic/data/assets/robot_description/mjcf/,manager_env.commands.motion.motion_lib_cfg.bps_dir=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/bps,manager_env.commands.motion.motion_lib_cfg.motion_file=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/robot,manager_env.commands.motion.motion_lib_cfg.object_motion_file=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/objects,manager_env.config.object_usd_path=/home/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_1600_no_release/object_usd,num_envs=6144
+    id: ???
+    num: ???
+    config_name: base
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.3.2
+    version_base: '1.1'
+    cwd: /home/GRAIL/imports/SONIC
+    config_sources:
+    - path: hydra.conf
+      schema: pkg
+      provider: hydra
+    - path: /home/GRAIL/imports/SONIC/gear_sonic/config
+      schema: file
+      provider: main
+    - path: ''
+      schema: structured
+      provider: schema
+    output_dir: /home/GRAIL/imports/SONIC/logs_rl/GRAB_Tracking/1104robocasa_carry_table-20261104_134734/.hydra
+    choices:
+      exp: manager/universal_token/distill/robocasa_carry_table
+      manager_env/observations/privileged_obs: robocasa_object_state
+      manager_env/observations/proprio_obs: robocasa_history
+      manager_env/observations/camera_rgb: base
+      manager_env: base_env
+      manager_env/recorders: empty
+      manager_env/curriculum: empty
+      manager_env/events: tracking/no_dr
+      manager_env/commands: tracking/base
+      manager_env/terminations: tracking/hoi_grab_no_lift
+      manager_env/rewards: hoi_manip/grab_rewards_no_lift_ucw
+      manager_env/observations/residual_action: null
+      manager_env/observations/policy_atm: proprio_hist
+      manager_env/observations/height_map: null
+      manager_env/observations/tokenizer: unitoken_all_noz_heading
+      manager_env/observations/critic: hoi_manip/grab_43dof_critic_mf_delta
+      manager_env/observations/policy: hoi_manip/grab_43dof_policy_mf_delta_bps
+      manager_env/actions: tracking/base
+      algo: ppo_im_phc
+      actor_critic: camera_cnn_distill
+      algo/trl: ppo
+      trainer: trl_ppo_aux
+      hydra/env: default
+      hydra/callbacks: null
+      hydra/job_logging: default
+      hydra/hydra_logging: default
+      hydra/hydra_help: default
+      hydra/help: default
+      hydra/sweeper: basic
+      hydra/launcher: basic
+      hydra/output: default
+  verbose: false

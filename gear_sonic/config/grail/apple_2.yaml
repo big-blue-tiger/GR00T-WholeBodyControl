@@ -5,9 +5,7 @@ source:
   robot: G1_43DOF_CFG / g1_43dof_s3.usda
   dynamics: GRAIL gear_sonic/envs/manager_env/robots/g1.py G1_43DOF_CFG (armature/effort);
     C++ PD and finger smoothing retained
-# Both MuJoCo and Isaac derive their ego projection from this camera.
-ego_camera:
-  vertical_fov_deg: 75.0
+# The default RGB camera is defined by head_camera in the G1 MJCF.
 table:
   position_xy:
   - 0.0

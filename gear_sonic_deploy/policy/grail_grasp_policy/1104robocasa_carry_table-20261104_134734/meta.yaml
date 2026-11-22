@@ -1,0 +1,2 @@
+max_train_steps: 30000
+wandb_run: dw6ibtec

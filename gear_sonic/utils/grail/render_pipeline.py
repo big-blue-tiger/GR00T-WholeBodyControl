@@ -4,6 +4,7 @@ No Isaac or USD imports: safe to import in the supervisor and spawned workers.
 """
 
 from contextlib import ExitStack
+from functools import lru_cache
 import json
 import multiprocessing as mp
 from multiprocessing.shared_memory import SharedMemory
@@ -15,6 +16,7 @@ import traceback
 import numpy as np
 
 SHAPE = (480, 640, 3)
+ROBOT_MJCF = Path(__file__).resolve().parents[2] / "data/robot_model/model_data/g1/g1_29dof_with_hand.xml"
 
 
 def atomic_json(path, value):
@@ -57,6 +59,35 @@ class PixelStats:
 _MODELS = {}
 
 
+@lru_cache(maxsize=1)
+def _reference_camera_model():
+    import xml.etree.ElementTree as ET
+
+    import mujoco
+
+    camera = ET.parse(ROBOT_MJCF).find(".//camera[@name='head_camera']")
+    return mujoco.MjModel.from_xml_string(
+        f"<mujoco><worldbody>{ET.tostring(camera, encoding='unicode')}</worldbody></mujoco>"
+    )
+
+
+def load_replay_model(path):
+    """Apply the current RGB calibration to snapshots with the old stock camera."""
+    import mujoco
+
+    model = mujoco.MjModel.from_binary_path(str(path))
+    camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera")
+    if camera_id < 0:
+        return model
+    if (not model.cam_sensorsize[camera_id].any()
+            and model.body(model.cam_bodyid[camera_id]).name == "torso_link"
+            and np.allclose(model.cam_pos[camera_id], [0.06, 0.0, 0.45], rtol=0, atol=1e-9)):
+        reference = _reference_camera_model()
+        for field in ("cam_pos", "cam_quat", "cam_fovy", "cam_resolution", "cam_sensorsize", "cam_intrinsic"):
+            getattr(model, field)[camera_id] = getattr(reference, field)[0]
+    return model
+
+
 def prepare_episode(path):
     """Calculate full forward kinematics off the Kit thread; no physics steps."""
     import mujoco
@@ -68,7 +99,7 @@ def prepare_episode(path):
     meta, trace = load_episode(path)
     model_path = str((path.parent / meta["model"]).resolve())
     if model_path not in _MODELS:
-        _MODELS[model_path] = mujoco.MjModel.from_binary_path(model_path)
+        _MODELS[model_path] = load_replay_model(model_path)
     model = _MODELS[model_path]
     data = mujoco.MjData(model)
     n = meta["transitions"]

@@ -154,11 +154,14 @@ def render_identity(paths, requested, encode_workers, gpu):
     """Fingerprint assets and implementation without launching a renderer."""
     from importlib import metadata
 
+    from .render_pipeline import ROBOT_MJCF
+
     scene_path = paths[0].parent / json.loads(paths[0].read_text())["scene"]
     scene = json.loads(scene_path.read_text())
     assets = [
         scene["manifest"]["source"],
         Path(__file__).parents[2] / "data/robots/g1/g1_43dof_s3.usda",
+        ROBOT_MJCF,
         *scene["manifest"]["dependencies"],
     ]
     background = scene["config"].get("isaac_scene", {})
@@ -326,9 +329,10 @@ def run_jobs(job):
             return
         from concurrent.futures import ProcessPoolExecutor
         import multiprocessing as mp
-        import mujoco
 
         from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
+
+        from .render_pipeline import load_replay_model
 
         booted = time.perf_counter()
         first = Path(job["episodes"][0])
@@ -336,7 +340,7 @@ def run_jobs(job):
         scene_path = (first.parent / meta["scene"]).resolve()
         model_path = (first.parent / meta["model"]).resolve()
         scene = json.loads(scene_path.read_text())
-        model = mujoco.MjModel.from_binary_path(str(model_path))
+        model = load_replay_model(model_path)
         visual = IsaacVisual(
             app, model, job["output"], scene["config"].get("isaac_scene"), scene["manifest"]["source"]
         )

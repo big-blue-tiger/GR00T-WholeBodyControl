@@ -59,7 +59,7 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 | `--dataset-dir` / `--object-key` | 资产目录与物体标识，准备和仿真时需保持一致 |
 | `--cache-dir` / `--grail-cache-dir` | 资产准备和仿真使用的同一缓存目录 |
 | `--initial-pose-file` | 机器人初始姿态文件 |
-| `--scene-config` | 场景 YAML，配置桌子、物体、接触、相机及 3DGS 背景 |
+| `--scene-config` | 场景 YAML，配置桌子、物体、接触及 3DGS 背景 |
 | `--grail-seed` | 随机种子，默认 `42` |
 | `--enable-image-publish` | 发布相机图像 |
 | `--render-backend` | `both` 为双渲染，`isaac` 或 `mujoco` 为单渲染 |
@@ -131,6 +131,8 @@ export LD_LIBRARY_PATH="/home/tide/robot/TensorRT-10.13.2.6/lib:/usr/local/cuda/
 就绪后按 **`]`**，再按 **Enter**，确认出现 `ZMQ STREAMING MODE: ENABLED`。
 
 ### 终端 4、5：查看相机
+
+MuJoCo 和 Isaac 共用 `gear_sonic/data/robot_model/model_data/g1/g1_29dof_with_hand.xml` 里的 `head_camera`。第一人称视角按 G1 Rev 1.0 的 `d435_joint` 安装位姿设置，光轴向前下倾 47.6°。离线数据生成也使用这套 640×480 D435i 彩色投影，内参来自公开的 G1 标定样本。[Humanoid-Everyday 的 RealSense RGB 标定](https://github.com/physical-superintelligence-lab/Humanoid-Everyday#camera-intrinsics-realsense-d435)
 
 以下两条命令分别在独立终端执行：
 
