@@ -21,13 +21,14 @@ import zmq
 class StateRenderProcess:
     def __init__(self, model, camera_configs, backend, fps, camera_port,
                  comparison_camera_port, headless, isaac_scene=None,
-                 isaac_object_asset=None):
+                 isaac_object_asset=None, grail_object_cycle=None):
         self.process = None
         self.context = None
         self.socket = None
         self._closed = False
         self._failed = False
         self.sequence = 0
+        self.object_key = grail_object_cycle["object_key"] if grail_object_cycle else None
         self.directory = tempfile.TemporaryDirectory(prefix="sonic-render-")
         try:
             directory = Path(self.directory.name)
@@ -41,6 +42,7 @@ class StateRenderProcess:
                 comparison_camera_port=comparison_camera_port, headless=headless,
                 camera_configs=camera_configs, parent_pid=os.getpid(),
                 isaac_scene=isaac_scene,
+                grail_object_cycle=grail_object_cycle,
                 isaac_object_asset=(str(Path(isaac_object_asset).resolve())
                                     if isaac_object_asset is not None else None),
             )
@@ -75,6 +77,7 @@ class StateRenderProcess:
         self.sequence += 1
         packet = msgpack.packb(dict(
             sequence=self.sequence, sim_time=float(data.time), timestamp=time.time(),
+            object_key=self.object_key,
             qpos=np.asarray(data.qpos, dtype="<f8").tobytes(),
             mocap_pos=np.asarray(data.mocap_pos, dtype="<f8").tobytes(),
             mocap_quat=np.asarray(data.mocap_quat, dtype="<f8").tobytes(),

@@ -65,19 +65,25 @@ class CarryRewardValueMonitor:
             raise ValueError(f"Unsupported CarryRewardValue observation layout: {path}")
         config = yaml.safe_load(path.with_name("config.yaml").read_text())
         self.gamma = float(config["algo"]["config"]["gamma"])
-        self.duration, self.env, self.observations = duration, env, observations
-        self.model, self.data = env.mj_model, env.mj_data
+        self.duration, self.env, self.layout = duration, env, layout
         self.net = CarryRewardValue().eval()
         self.net.load_state_dict(carry["models"])
         torch.set_num_threads(1)
+        self.default_pos = np.asarray(layout["default_joint_pos"], dtype=np.float32)
+        self.default_vel = np.asarray(layout["default_joint_vel"], dtype=np.float32)
+        self.bind_scene(observations)
+        self.last_report = -float("inf")
+        print(f"[CarryRewardValue] Checkpoint {path} | gamma={self.gamma:g}", flush=True)
 
+    def bind_scene(self, observations):
+        env, layout = self.env, self.layout
+        self.model, self.data = env.mj_model, env.mj_data
+        self.observations = observations
         joints = np.array([self.model.joint(name).id for name in layout["joint_names"]])
         self.qadr, self.vadr = self.model.jnt_qposadr[joints], self.model.jnt_dofadr[joints]
         command_qadr = np.r_[env.body_qpos_adr, env.left_hand_qpos_adr, env.right_hand_qpos_adr]
         command_index = {address: i for i, address in enumerate(command_qadr)}
         self.command_order = [command_index[address] for address in self.qadr]
-        self.default_pos = np.asarray(layout["default_joint_pos"], dtype=np.float32)
-        self.default_vel = np.asarray(layout["default_joint_vel"], dtype=np.float32)
         self.links = [self.model.body(name).id for name in layout["body_names"]]
         self.hand = [self.model.body(name).id for name in layout["hand_frame_links"]]
         self.contact_order = [
@@ -85,8 +91,6 @@ class CarryRewardValueMonitor:
         ]
         self.robot_bodies = self.model.body_rootid == self.model.body_rootid[observations.pelvis]
         self.table_size = np.asarray(observations.config["table"]["size"])
-        self.last_report = -float("inf")
-        print(f"[CarryRewardValue] Checkpoint {path} | gamma={self.gamma:g}", flush=True)
 
     def reset(self):
         self.history = self.state = self.value = self.target = None

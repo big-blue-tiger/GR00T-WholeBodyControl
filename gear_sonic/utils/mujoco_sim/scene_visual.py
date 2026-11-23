@@ -11,11 +11,11 @@ class SceneVisual:
     def __init__(self, stage, model, show_colliders=True, object_asset_path=None):
         from .isaac_visual import world_matrix
 
-        self.model, self.ops = model, {}
+        self.stage, self.model, self.ops = stage, model, {}
         self.world_matrix = world_matrix
         self.object_body_id = None
         if object_asset_path is not None:
-            self._reference_object(stage, object_asset_path)
+            self.set_object(model, object_asset_path)
         for i in range(model.ngeom):
             name = model.geom(i).name
             body_name = model.body(int(model.geom_bodyid[i])).name
@@ -39,7 +39,7 @@ class SceneVisual:
             transform = UsdGeom.Xformable(geom).AddTransformOp(UsdGeom.XformOp.PrecisionDouble)
             self.ops[i] = transform
 
-    def _reference_object(self, stage, asset_path):
+    def set_object(self, model, asset_path):
         asset = Path(asset_path).resolve()
         if not asset.is_file():
             raise FileNotFoundError(f"Isaac object USD does not exist: {asset}")
@@ -48,9 +48,13 @@ class SceneVisual:
             raise ValueError(f"Object USD requires a default prim: {asset}")
         if UsdGeom.GetStageUpAxis(source) != UsdGeom.Tokens.z:
             raise ValueError("Expected the prepared object's Z-up USD")
-        self.object_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "grail_object")
-        if self.object_body_id < 0:
+        object_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "grail_object")
+        if object_body_id < 0:
             raise ValueError("Object USD requires the MuJoCo grail_object body")
+        stage = self.stage
+        if self.object_body_id is not None:
+            stage.RemovePrim("/Task/grail_object")
+        self.model, self.object_body_id = model, object_body_id
         self.object_unit = UsdGeom.GetStageMetersPerUnit(source)
         root = UsdGeom.Xform.Define(stage, "/Task/grail_object")
         self.object_op = root.AddTransformOp(UsdGeom.XformOp.PrecisionDouble)

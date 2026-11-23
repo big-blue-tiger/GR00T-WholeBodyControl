@@ -11,13 +11,13 @@ DEFAULT_CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carr
 CHECKPOINT=${CHECKPOINT:-$DEFAULT_CHECKPOINT}
 REWARD_VALUE_CHECKPOINT=${REWARD_VALUE_CHECKPOINT:-$DEFAULT_CHECKPOINT}
 SIM_PYTHON=${SIM_PYTHON:-$(command -v python)}
-DATASET_DIR=${DATASET_DIR:-gear_sonic/data/grail/pickup_table_slowturn_300}
+DATASET_DIR=${DATASET_DIR:-gear_sonic/data/grail/1600obj}
 INITIAL_POSE=${INITIAL_POSE:-gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl}
 cache_args=()
-recovery_args=()
+mode_args=(--grail-cycle-objects)
 episode_log=outputs/grail-episodes.jsonl
 if [[ ${1:-} == --recovery ]]; then
-  recovery_args=(--grail-recovery --grail-recovery-checkpoint "$CHECKPOINT")
+  mode_args=(--grail-recovery --grail-recovery-checkpoint "$CHECKPOINT")
   episode_log=outputs/grail-recovery-episodes.jsonl
 fi
 simulation_log=${episode_log%-episodes.jsonl}-simulation.log
@@ -48,7 +48,7 @@ gnome-terminal --window --title="GRAIL - Simulation" --working-directory="$ROOT"
   --initial-pose-file "$INITIAL_POSE" \
   --scene-config gear_sonic/config/grail/apple_2.yaml \
   --object-key "$OBJECT_KEY" \
-  "${cache_args[@]}" --grail-seed "${GRAIL_SEED:-42}" "${recovery_args[@]}" \
+  "${cache_args[@]}" --grail-seed "${GRAIL_SEED:-42}" "${mode_args[@]}" \
   --grail-reward-value-checkpoint "$REWARD_VALUE_CHECKPOINT" \
   --enable-image-publish --render-backend both --isaac-headless \
   --grail-log "$episode_log" --verbose-timing

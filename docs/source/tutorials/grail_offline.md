@@ -7,6 +7,7 @@
 ```bash
 python -m gear_sonic.scripts.grail_offline collect \
   --output outputs/my_grail_run \
+  --dataset-dir gear_sonic/data/grail/1600obj \
   --num-envs 1 --num-episodes 2 --cpu-workers 1
 ```
 
@@ -19,14 +20,16 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--device` / `--threads` | 顶层策略推理设备和 PyTorch 线程数，默认 `cuda:0` 和 `1` |
 | `--task` | 导出数据集使用的任务描述 |
 | `--checkpoint` | 覆盖默认权重，可传入 `.pt` 文件或目录。自定义权重须支持 884 维输入，并与其 `config.yaml` 同目录 |
-| `--dataset-dir` / `--object-key` | 原始资产目录与物体标识。默认使用仓库随附的洗手液 |
-| `--cache-dir` | 覆盖预转换目录，默认按 `--dataset-dir` 的目录名查找 |
+| `--dataset-dir` / `--object-key` | 默认数据集为 `gear_sonic/data/grail/1600obj`，默认物体为 `pickup_table__soap_dispenser_0__001` |
+| `--cache-dir` | 覆盖 MuJoCo 预转换目录。`1600obj` 默认使用其下的 `object_obj/` |
 | `--initial-pose` / `--scene-config` | 初始姿态和场景配置 |
 | `--no-release-override` | 关闭强制松手和松手后的 latent 锁定 |
 
 切换物体前先取得[原始资产和预转换结果](../getting_started/grail_environment.md#批量准备其他物体)。跨机器移动轨迹用于渲染时，保留轨迹与资产之间的相对目录布局。
 
 ## 2. 渲染图像
+
+Isaac Sim 根据采集时写入的 `scene.json` 读取物体 USD。使用默认数据集采集的轨迹引用 `gear_sonic/data/grail/1600obj/object_usd/` 下的资产。
 
 ```bash
 python -m gear_sonic.scripts.grail_offline render \
@@ -76,6 +79,7 @@ python -m gear_sonic.scripts.validate_grail_render \
 ```bash
 python -m gear_sonic.scripts.grail_offline benchmark \
   --output outputs/my_grail_benchmark \
+  --dataset-dir gear_sonic/data/grail/1600obj \
   --num-envs 3 --num-episodes 3 --cpu-workers 3
 
 python -m gear_sonic.scripts.benchmark_grail_render \

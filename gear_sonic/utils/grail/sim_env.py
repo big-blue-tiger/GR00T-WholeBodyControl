@@ -1,9 +1,13 @@
 """GRAIL scene plugged into the existing MuJoCo/DDS simulator."""
 
+from pathlib import Path
 from threading import Event
+
+import mujoco
 
 from gear_sonic.utils.mujoco_sim.base_sim import DefaultEnv
 
+from .assets import prepared_object_keys
 from .runtime import GrailRuntime
 from .scene import build_scene
 
@@ -40,14 +44,56 @@ class GrailEnv(DefaultEnv):
         return torques
 
     def load_model(self, xml_path):
+        cache_dir = self.config["GRAIL_CACHE_DIR"]
+        self.scene_inputs = dict(
+            robot_scene=str(Path(xml_path).resolve()),
+            scene_config=str(Path(self.config["GRAIL_SCENE_CONFIG"]).resolve()),
+            dataset_dir=str(Path(self.config["GRAIL_DATASET_DIR"]).resolve()),
+            cache_dir=str(Path(cache_dir).resolve()) if cache_dir is not None else None,
+        )
+        object_key = self.config["GRAIL_OBJECT_KEY"]
         model, self.grail_scene, self.grail_manifest = build_scene(
-            xml_path,
-            self.config["GRAIL_SCENE_CONFIG"],
-            self.config["GRAIL_DATASET_DIR"],
-            self.config["GRAIL_OBJECT_KEY"],
-            self.config["GRAIL_CACHE_DIR"],
+            object_key=object_key, **self.scene_inputs
+        )
+        self.object_keys = []
+        if self.config.get("GRAIL_CYCLE_OBJECTS"):
+            self.object_keys = prepared_object_keys(
+                self.scene_inputs["dataset_dir"], self.scene_inputs["cache_dir"]
+            )
+        self.grail_object_cycle = (
+            dict(object_key=object_key, scene_inputs=self.scene_inputs)
+            if len(self.object_keys) > 1 else None
         )
         return model
+
+    def prepare_next_scene(self):
+        current = self.object_keys.index(self.grail_manifest["object_key"])
+        for key in self.object_keys[current + 1:] + self.object_keys[:current]:
+            try:
+                return build_scene(object_key=key, **self.scene_inputs)
+            except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
+                print(f"[GRAIL] Skipping object {key}: {exc}", flush=True)
+        return None
+
+    def replace_scene(self, model, config, manifest):
+        # Object assets only modify the task body. Robot control indices are
+        # identical across the scenes built from the same robot MJCF.
+        model.opt.timestep = self.sim_dt
+        self.mj_model, self.mj_data = model, mujoco.MjData(model)
+        self.grail_scene, self.grail_manifest = config, manifest
+        if self.image_publish_process is not None:
+            self.image_publish_process.object_key = manifest["object_key"]
+        if self.offscreen and not self.isolated_rendering:
+            for renderer in self.renderers.values():
+                renderer.close()
+            self.init_renderers()
+        if self.viewer is not None:
+            # MuJoCo 3.17's passive Handle has no public model reload method.
+            # Use its native viewer loader to refresh GL assets in the same window.
+            viewer = self.viewer._get_sim()
+            if viewer is not None:
+                mujoco.mj_forward(model, self.mj_data)
+                viewer.load(model, self.mj_data, "")
 
     def reset(self):
         if hasattr(self, "grail"):

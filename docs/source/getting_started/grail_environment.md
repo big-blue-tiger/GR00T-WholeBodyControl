@@ -57,6 +57,6 @@ python -m gear_sonic.scripts.prepare_grail_assets \
 | `--dataset-dir` | 原始数据集目录 |
 | `--all` | 转换数据集内所有物体 |
 | `--object-key` | 仅转换指定物体，与 `--all` 互斥 |
-| `--cache-dir` | 覆盖输出目录。默认写入 `gear_sonic/data/grail/prepared_assets/<数据集目录名>/` |
+| `--cache-dir` | 覆盖输出目录。`1600obj` 默认写入 `gear_sonic/data/grail/1600obj/object_obj/`，其他数据集默认写入 `gear_sonic/data/grail/prepared_assets/<数据集目录名>/` |
 
 分发额外物体时一起提供原始数据集和对应的预转换目录，并保留贴图的相对路径。

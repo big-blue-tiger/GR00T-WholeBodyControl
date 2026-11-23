@@ -244,7 +244,16 @@ models/
 !/gear_sonic/data/grail/pickup_table_slowturn_300/object_usd/pickup_table__soap_dispenser_0__001.usd
 !/gear_sonic/data/grail/pickup_table_slowturn_300/object_usd/textures/pickup_table__soap_dispenser_0__001/material_0.png
 
-# Share the default prepared object in Git, keep bulk conversions alongside it.
+# Share the default 1600obj asset in Git alongside local bulk assets.
+!/gear_sonic/data/grail/1600obj/
+/gear_sonic/data/grail/1600obj/**
+!/gear_sonic/data/grail/1600obj/**/
+!/gear_sonic/data/grail/1600obj/bps/pickup_table__soap_dispenser_0__001.npy
+!/gear_sonic/data/grail/1600obj/object_usd/pickup_table__soap_dispenser_0__001.usd
+!/gear_sonic/data/grail/1600obj/object_usd/textures/pickup_table__soap_dispenser_0__001/material_0.png
+!/gear_sonic/data/grail/1600obj/object_obj/pickup_table__soap_dispenser_0__001/**
+
+# Legacy cache layout for other datasets.
 !/gear_sonic/data/grail/prepared_assets/
 /gear_sonic/data/grail/prepared_assets/*
 !/gear_sonic/data/grail/prepared_assets/pickup_table_slowturn_300/

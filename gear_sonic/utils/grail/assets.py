@@ -20,7 +20,21 @@ PREPARED_ASSETS = Path(__file__).resolve().parents[2] / "data/grail/prepared_ass
 def prepared_directory(dataset_dir, cache_dir=None):
     if cache_dir is not None:
         return Path(cache_dir).resolve()
-    return PREPARED_ASSETS / Path(dataset_dir).resolve().name
+    dataset_dir = Path(dataset_dir).resolve()
+    if dataset_dir.name == "1600obj":
+        return dataset_dir / "object_obj"
+    return PREPARED_ASSETS / dataset_dir.name
+
+
+def prepared_object_keys(dataset_dir, cache_dir=None):
+    root = Path(dataset_dir).resolve()
+    cache = prepared_directory(root, cache_dir)
+    return sorted(
+        usd.stem for usd in (root / "object_usd").glob("*.usd")
+        if usd.is_file()
+        and (root / "bps" / f"{usd.stem}.npy").is_file()
+        and (cache / usd.stem / "latest.json").is_file()
+    )
 
 
 def asset_paths(dataset_dir, object_key):

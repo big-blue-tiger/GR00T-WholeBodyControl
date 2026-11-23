@@ -83,15 +83,26 @@ def run(options):
 
         model = mujoco.MjModel.from_binary_path(options["model_path"])
         data = mujoco.MjData(model)
+        object_cycle = options.get("grail_object_cycle")
+        object_key = object_cycle["object_key"] if object_cycle else None
+        if object_cycle:
+            from gear_sonic.utils.grail.scene import build_scene
+
         if app is not None:
             from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
 
             isaac = IsaacVisual(app, model, os.path.dirname(options["model_path"]),
                                 scene_config=options["isaac_scene"],
                                 object_asset_path=options["isaac_object_asset"])
-        if options["backend"] in ("mujoco", "both"):
-            for name, config in options["camera_configs"].items():
-                renderers[name] = mujoco.Renderer(model, height=config["height"], width=config["width"])
+
+        def init_mujoco_renderers():
+            if options["backend"] in ("mujoco", "both"):
+                for name, config in options["camera_configs"].items():
+                    renderers[name] = mujoco.Renderer(
+                        model, height=config["height"], width=config["width"]
+                    )
+
+        init_mujoco_renderers()
 
         ports = {options["backend"]: options["camera_port"]}
         if options["backend"] == "both":
@@ -141,6 +152,19 @@ def run(options):
             if packet["sequence"] <= last_sequence:
                 continue
             last_sequence = packet["sequence"]
+            if object_cycle and packet["object_key"] != object_key:
+                object_key = packet["object_key"]
+                new_model, _, manifest = build_scene(
+                    object_key=object_key, **object_cycle["scene_inputs"]
+                )
+                new_model.opt.timestep = model.opt.timestep
+                model, data = new_model, mujoco.MjData(new_model)
+                for renderer in renderers.values():
+                    renderer.close()
+                renderers.clear()
+                init_mujoco_renderers()
+                if isaac is not None:
+                    isaac.scene.set_object(model, manifest["source"])
             qpos = np.frombuffer(packet["qpos"], dtype="<f8")
             if qpos.shape != (model.nq,) or not np.isfinite(qpos).all():
                 raise ValueError("Invalid MuJoCo state snapshot")

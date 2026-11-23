@@ -46,15 +46,18 @@ class GrailRuntime:
                 or not np.isfinite(self.initial[key]).all()
             ):
                 raise ValueError(f"Invalid initial pose field {key}")
-        self.recovery = self.recovery_executor = self.recovery_future = None
+        self.recovery = self.recovery_future = self.scene_future = None
         if env.config.get("GRAIL_RECOVERY"):
             from .checkpoints import DEFAULT_CHECKPOINT
             from .recovery import RecoveryInitializer
 
-            checkpoint = env.config.get("GRAIL_RECOVERY_CHECKPOINT") or DEFAULT_CHECKPOINT
-            self.recovery = RecoveryInitializer(self.model, self.cfg, checkpoint)
-            self.recovery_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="grail-reset")
+            self.recovery_checkpoint = env.config.get("GRAIL_RECOVERY_CHECKPOINT") or DEFAULT_CHECKPOINT
+            self.recovery = RecoveryInitializer(self.model, self.cfg, self.recovery_checkpoint)
             self.duration = RECOVERY_DURATION
+        self.reset_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="grail-reset")
+            if self.recovery is not None or env.grail_object_cycle else None
+        )
         self.reward_value = None
         if checkpoint := env.config.get("GRAIL_REWARD_VALUE_CHECKPOINT"):
             from .carry_reward_value import CarryRewardValueMonitor
@@ -80,13 +83,20 @@ class GrailRuntime:
 
     def event(self, kind, **details):
         entry = dict(
-            event=kind, episode_id=self.episode_id, sim_time=float(self.data.time), **details
+            event=kind, episode_id=self.episode_id, sim_time=float(self.data.time),
+            object_key=self.manifest["object_key"], **details,
         )
         if self.log:
             self.log.write(json.dumps(entry) + "\n")
         print("[GRAIL] " + json.dumps(entry), flush=True)
 
     def reset(self):
+        if self.episode and self.env.grail_object_cycle:
+            self.phase = "switching_object"
+            return
+        self.start_episode()
+
+    def start_episode(self):
         self.episode += 1
         self.episode_id = f"{self.session}:{self.episode}"
         # Keep the recovery scene fixed so changes between runs come from the
@@ -120,7 +130,7 @@ class GrailRuntime:
         self.phase = "preparing"
         # Keep publishing LowState while IK runs. A slow reset on the
         # simulation thread would make the decoder stop receiving feedback.
-        self.recovery_future = self.recovery_executor.submit(
+        self.recovery_future = self.reset_executor.submit(
             self.prepare_recovery, self.data.qpos.copy(),
             self.data.mocap_pos.copy(), self.data.mocap_quat.copy(), details,
         )
@@ -227,6 +237,25 @@ class GrailRuntime:
         )
 
     def before_step(self):
+        if self.env.grail_object_cycle and self.scene_future is None:
+            self.scene_future = self.reset_executor.submit(self.env.prepare_next_scene)
+        if self.phase == "switching_object":
+            if self.scene_future.done():
+                scene = self.scene_future.result()
+                self.scene_future = None
+                if scene is not None:
+                    self.env.replace_scene(*scene)
+                    self.model, self.data = self.env.mj_model, self.env.mj_data
+                    self.cfg, self.manifest = self.env.grail_scene, self.env.grail_manifest
+                    self.observations = Observations(self.model, self.cfg, self.manifest["bps"])
+                    if self.reward_value is not None:
+                        self.reward_value.bind_scene(self.observations)
+                    if self.recovery is not None:
+                        self.recovery = type(self.recovery)(
+                            self.model, self.cfg, self.recovery_checkpoint
+                        )
+                self.start_episode()
+            return False
         if self.phase == "preparing":
             if self.recovery_future.done():
                 qpos, details = self.recovery_future.result()
@@ -345,8 +374,8 @@ class GrailRuntime:
         return True
 
     def close(self):
-        if self.recovery_executor is not None:
-            self.recovery_executor.shutdown(wait=True, cancel_futures=True)
+        if self.reset_executor is not None:
+            self.reset_executor.shutdown(wait=True, cancel_futures=True)
         for stream in (self.states, self.actions, self.decoder, self.debug):
             stream.close(0)
         self.context.term()

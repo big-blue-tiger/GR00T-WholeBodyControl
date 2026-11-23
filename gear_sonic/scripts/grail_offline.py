@@ -25,7 +25,7 @@ def parser():
     p = commands.add_parser("collect", help="record complete simulation-clock episodes")
     p.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT,
                    help=".pt file or directory (newest complete .pt)")
-    p.add_argument("--dataset-dir", type=Path, default=GRAIL_ASSETS / "pickup_table_slowturn_300")
+    p.add_argument("--dataset-dir", type=Path, default=GRAIL_ASSETS / "1600obj")
     p.add_argument("--initial-pose", type=Path, default=GRAIL_ASSETS / "init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl")
     p.add_argument("--scene-config", type=Path, default=ROOT / "gear_sonic/config/grail/apple_2.yaml")
     p.add_argument("--robot-scene", type=Path, default=ROOT / "gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml")

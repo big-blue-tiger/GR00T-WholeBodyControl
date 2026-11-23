@@ -361,6 +361,8 @@ class SimLoopConfig(BaseConfig):
     dataset_dir: Optional[str] = None
     object_key: str = "pickup_table__alcohol_4__000"
     """GRAIL object asset basename; selects its USD, BPS and prepared cache."""
+    grail_cycle_objects: bool = False
+    """On reset, advance to the next prepared object in basename order."""
 
     grail_seed: int = 42
     grail_recovery: bool = False
@@ -368,7 +370,7 @@ class SimLoopConfig(BaseConfig):
     grail_recovery_checkpoint: Optional[str] = None
     """Policy checkpoint used for the recovery hand primitives, if overridden."""
     grail_cache_dir: Optional[str] = None
-    """Override the preconverted cache under gear_sonic/data/grail/prepared_assets/."""
+    """Override the preconverted asset directory for the selected dataset."""
     grail_observation_endpoint: str = "tcp://127.0.0.1:5560"
     grail_action_endpoint: str = "tcp://127.0.0.1:5561"
     grail_log: Optional[str] = None

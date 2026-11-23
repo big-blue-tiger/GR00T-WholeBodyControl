@@ -69,6 +69,7 @@ def main(config: ArgsConfig):
             GRAIL_INITIAL_POSE=config.initial_pose_file,
             GRAIL_DATASET_DIR=config.dataset_dir,
             GRAIL_OBJECT_KEY=config.object_key,
+            GRAIL_CYCLE_OBJECTS=config.grail_cycle_objects,
             GRAIL_CACHE_DIR=config.grail_cache_dir,
             GRAIL_SEED=config.grail_seed,
             GRAIL_RECOVERY=config.grail_recovery,

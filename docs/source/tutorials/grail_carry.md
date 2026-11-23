@@ -12,6 +12,8 @@ DEVICE=cuda:0 bash gear_sonic/scripts/run_grail_carry.sh
 
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。退出时，仿真、策略和 decoder 终端按 **Ctrl+C**，相机窗口按 **Q**。
 
+搬运从 `OBJECT_KEY` 指定的物体开始。每次回合结束、机器人摔倒或在 MuJoCo 窗口按 **Backspace** 重置时，按物体标识的字典序切到下一件，末尾回到开头。轮换使用具备 USD、BPS 和 MuJoCo 预转换缓存的物体。`outputs/grail-episodes.jsonl` 中的 `object_key` 记录当前物体。
+
 两个一键启动命令的 `GRAIL - Simulation` 终端在运行中约每 0.1 秒原地刷新一行，只显示 `Reward`、`Value` 和 `TD Advantage` 的标签与数值。其他仿真输出写入 `outputs/grail-simulation.log`（搬运）或 `outputs/grail-recovery-simulation.log`（恢复）。MuJoCo 主窗口不显示叠字。
 
 | 环境变量 | 说明 |
@@ -19,8 +21,8 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 | `DEVICE` | 顶层策略推理设备，默认 `cpu`，可设为 `cuda:0` |
 | `CHECKPOINT` | 策略权重文件或目录。目录按修改时间选择最新的 `.pt` |
 | `REWARD_VALUE_CHECKPOINT` | 实时奖励和价值预测权重，默认使用仓库随附的 `last.pt` |
-| `DATASET_DIR` / `OBJECT_KEY` | 原始资产目录与物体标识，默认使用仓库随附的洗手液 |
-| `GRAIL_CACHE_DIR` | 覆盖预转换目录，默认按 `DATASET_DIR` 的目录名查找 |
+| `DATASET_DIR` / `OBJECT_KEY` | 默认数据集为 `gear_sonic/data/grail/1600obj`，起始物体默认为 `pickup_table__soap_dispenser_0__001` |
+| `GRAIL_CACHE_DIR` | 覆盖 MuJoCo 预转换目录。`1600obj` 默认使用其下的 `object_obj/` |
 | `INITIAL_POSE` | 机器人初始姿态文件 |
 | `SIM_PYTHON` | 覆盖 Python 解释器，默认使用当前环境的 `python` |
 
@@ -44,8 +46,9 @@ Decoder 启动后仍按 **`]`**、**Enter**。可用 `GRAIL_SEED` 复现采样�
 mkdir -p outputs
 python -m gear_sonic.scripts.run_sim_loop \
   --env-name grail \
-  --dataset-dir gear_sonic/data/grail/pickup_table_slowturn_300 \
+  --dataset-dir gear_sonic/data/grail/1600obj \
   --object-key pickup_table__soap_dispenser_0__001 \
+  --grail-cycle-objects \
   --initial-pose-file gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl \
   --scene-config gear_sonic/config/grail/apple_2.yaml \
   --grail-reward-value-checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
@@ -56,6 +59,7 @@ python -m gear_sonic.scripts.run_sim_loop \
 | 参数 | 说明 |
 |---|---|
 | `--dataset-dir` / `--object-key` | 原始资产目录与物体标识 |
+| `--grail-cycle-objects` | 每轮重置切到下一个已准备好的物体 |
 | `--grail-cache-dir` | 覆盖预转换目录，与转换命令的 `--cache-dir` 对应 |
 | `--initial-pose-file` / `--scene-config` | 初始姿态和场景配置 |
 | `--grail-seed` | 随机种子，默认 `42` |

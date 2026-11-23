@@ -90,6 +90,7 @@ class DefaultEnv:
             headless=self.config.get("ISAAC_HEADLESS", False),
             isaac_scene=getattr(self, "grail_scene", {}).get("isaac_scene"),
             isaac_object_asset=getattr(self, "grail_manifest", {}).get("source"),
+            grail_object_cycle=getattr(self, "grail_object_cycle", None),
         )
 
     def _get_dof_indices_by_class(self):
