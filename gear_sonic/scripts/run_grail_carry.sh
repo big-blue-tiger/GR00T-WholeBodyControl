@@ -14,6 +14,13 @@ SIM_PYTHON=${SIM_PYTHON:-$(command -v python)}
 DATASET_DIR=${DATASET_DIR:-gear_sonic/data/grail/pickup_table_slowturn_300}
 INITIAL_POSE=${INITIAL_POSE:-gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl}
 cache_args=()
+recovery_args=()
+episode_log=outputs/grail-episodes.jsonl
+if [[ ${1:-} == --recovery ]]; then
+  recovery_args=(--grail-recovery --grail-recovery-checkpoint "$CHECKPOINT")
+  episode_log=outputs/grail-recovery-episodes.jsonl
+fi
+simulation_log=${episode_log%-episodes.jsonl}-simulation.log
 if [[ -n ${GRAIL_CACHE_DIR:-} ]]; then
   cache_args=(--grail-cache-dir "$GRAIL_CACHE_DIR")
 fi
@@ -23,16 +30,28 @@ fi
 mkdir -p outputs
 
 gnome-terminal --window --title="GRAIL - Simulation" --working-directory="$ROOT" -- \
-  "$SIM_PYTHON" -m gear_sonic.scripts.run_sim_loop \
+  bash -o pipefail -c '
+    log=$1
+    shift
+    "$@" 2>&1 | {
+      trap "" INT
+      while IFS= read -r line || [[ -n $line ]]; do
+        printf "%s\n" "$line" >&3
+        if [[ $line == "[CarryRewardValue | "*"] "* ]]; then
+          printf "\r\033[K%s" "${line#*] }"
+        fi
+      done
+    } 3>>"$log"
+  ' grail-simulation "$simulation_log" "$SIM_PYTHON" -u -m gear_sonic.scripts.run_sim_loop \
   --env-name grail \
   --dataset-dir "$DATASET_DIR" \
   --initial-pose-file "$INITIAL_POSE" \
   --scene-config gear_sonic/config/grail/apple_2.yaml \
   --object-key "$OBJECT_KEY" \
-  "${cache_args[@]}" --grail-seed 42 \
+  "${cache_args[@]}" --grail-seed "${GRAIL_SEED:-42}" "${recovery_args[@]}" \
   --grail-reward-value-checkpoint "$REWARD_VALUE_CHECKPOINT" \
   --enable-image-publish --render-backend both --isaac-headless \
-  --grail-log outputs/grail-episodes.jsonl --verbose-timing
+  --grail-log "$episode_log" --verbose-timing
 
 gnome-terminal --window --title="GRAIL - Policy" --working-directory="$ROOT" -- \
   "$SIM_PYTHON" -m gear_sonic.scripts.run_grail_policy \
@@ -64,4 +83,6 @@ for camera in Isaac:5555 MuJoCo:5559; do
 done
 
 echo '五个终端已打开。Decoder 就绪后，在其窗口按 ]，再按 Enter 开启 streaming。'
+echo 'GRAIL - Simulation 终端刷新 Reward、Value 和 TD Advantage。'
+printf '仿真日志：%s\n' "$simulation_log"
 echo '退出：仿真、Policy、Decoder 窗口分别按 Ctrl+C；相机窗口按 Q。'

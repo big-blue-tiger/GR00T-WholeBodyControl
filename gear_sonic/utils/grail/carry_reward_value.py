@@ -85,15 +85,12 @@ class CarryRewardValueMonitor:
         ]
         self.robot_bodies = self.model.body_rootid == self.model.body_rootid[observations.pelvis]
         self.table_size = np.asarray(observations.config["table"]["size"])
-        self.set_texts = getattr(env.viewer, "set_texts", None)
         self.last_report = -float("inf")
         print(f"[CarryRewardValue] Checkpoint {path} | gamma={self.gamma:g}", flush=True)
 
     def reset(self):
         self.history = self.state = self.value = self.target = None
         self.success = False
-        if self.set_texts is not None:
-            self.set_texts((None, None, "CarryRewardValue", "Waiting for control steps"))
 
     def capture_target(self):
         # Read under the same DDS locks as the torque calculation for this substep.
@@ -181,19 +178,17 @@ class CarryRewardValueMonitor:
     def finish(self, episode, step, *, timeout):
         if self.state is not None and self.target is not None:
             # Match GRAIL's PPO timeout correction. A fall is terminal.
-            self.report(episode, step, self.value if timeout else 0.0, final=True)
+            self.report(episode, step, self.value if timeout else 0.0)
 
-    def report(self, episode, step, bootstrap, *, final=False):
+    def report(self, episode, step, bootstrap):
         reward_input = torch.cat((self.state, torch.from_numpy(self.target)))
         reward = self.net.reward(reward_input).item()
         advantage = reward + self.gamma * bootstrap - self.value
-        title = f"CarryRewardValue | Episode {episode} | Step {step}"
-        labels = ("Reward", "Value", "Advantage (TD)")
-        values = tuple(f"{number:.9g}" for number in (reward, self.value, advantage))
-        if self.set_texts is not None:
-            self.set_texts((None, None, "\n".join((title, *labels)), "\n".join(("", *values))))
         now = time.monotonic()
-        if final or now - self.last_report >= 0.25:
-            text = " | ".join(f"{label} {value}" for label, value in zip(labels, values))
-            print(f"[{title}] {text}", flush=True)
+        if now - self.last_report >= 0.1:
+            print(
+                f"[CarryRewardValue | Episode {episode} | Step {step}] "
+                f"Reward: {reward:.9g} | Value: {self.value:.9g} | TD Advantage: {advantage:.9g}",
+                flush=True,
+            )
             self.last_report = now

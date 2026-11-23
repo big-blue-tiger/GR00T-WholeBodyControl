@@ -71,6 +71,8 @@ def main(config: ArgsConfig):
             GRAIL_OBJECT_KEY=config.object_key,
             GRAIL_CACHE_DIR=config.grail_cache_dir,
             GRAIL_SEED=config.grail_seed,
+            GRAIL_RECOVERY=config.grail_recovery,
+            GRAIL_RECOVERY_CHECKPOINT=config.grail_recovery_checkpoint,
             GRAIL_OBSERVATION_ENDPOINT=config.grail_observation_endpoint,
             GRAIL_ACTION_ENDPOINT=config.grail_action_endpoint,
             GRAIL_LOG=config.grail_log,

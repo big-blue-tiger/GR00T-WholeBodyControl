@@ -363,13 +363,17 @@ class SimLoopConfig(BaseConfig):
     """GRAIL object asset basename; selects its USD, BPS and prepared cache."""
 
     grail_seed: int = 42
+    grail_recovery: bool = False
+    """Sample nearby failed-grasp starts and reset every five simulation seconds."""
+    grail_recovery_checkpoint: Optional[str] = None
+    """Policy checkpoint used for the recovery hand primitives, if overridden."""
     grail_cache_dir: Optional[str] = None
     """Override the preconverted cache under gear_sonic/data/grail/prepared_assets/."""
     grail_observation_endpoint: str = "tcp://127.0.0.1:5560"
     grail_action_endpoint: str = "tcp://127.0.0.1:5561"
     grail_log: Optional[str] = None
     grail_reward_value_checkpoint: Optional[str] = None
-    """Checkpoint with CarryRewardValue weights for live MuJoCo diagnostics."""
+    """Checkpoint with CarryRewardValue weights for live terminal diagnostics."""
 
     verbose: bool = False
     """Verbose output, override the base config verbose"""

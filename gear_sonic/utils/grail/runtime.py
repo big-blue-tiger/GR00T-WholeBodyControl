@@ -4,6 +4,7 @@ import json
 import pickle
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import msgpack
 import mujoco
@@ -20,13 +21,16 @@ from .transport import pack, socket, unpack
 
 
 EPISODE_DURATION = 25.0
+RECOVERY_DURATION = 5.0
 
 
 class GrailRuntime:
     def __init__(self, env):
         self.env, self.model, self.data = env, env.mj_model, env.mj_data
         self.cfg, self.manifest = env.grail_scene, env.grail_manifest
-        self.rng = np.random.default_rng(env.config["GRAIL_SEED"])
+        self.seed = env.config["GRAIL_SEED"]
+        self.rng = np.random.default_rng(self.seed)
+        self.duration = EPISODE_DURATION
         self.planner = CarryPlannerConfig(**self.cfg["planner"])
         self.observations = Observations(self.model, self.cfg, self.manifest["bps"])
         with open(env.config["GRAIL_INITIAL_POSE"], "rb") as stream:
@@ -42,12 +46,21 @@ class GrailRuntime:
                 or not np.isfinite(self.initial[key]).all()
             ):
                 raise ValueError(f"Invalid initial pose field {key}")
+        self.recovery = self.recovery_executor = self.recovery_future = None
+        if env.config.get("GRAIL_RECOVERY"):
+            from .checkpoints import DEFAULT_CHECKPOINT
+            from .recovery import RecoveryInitializer
+
+            checkpoint = env.config.get("GRAIL_RECOVERY_CHECKPOINT") or DEFAULT_CHECKPOINT
+            self.recovery = RecoveryInitializer(self.model, self.cfg, checkpoint)
+            self.recovery_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="grail-reset")
+            self.duration = RECOVERY_DURATION
         self.reward_value = None
         if checkpoint := env.config.get("GRAIL_REWARD_VALUE_CHECKPOINT"):
             from .carry_reward_value import CarryRewardValueMonitor
 
             self.reward_value = CarryRewardValueMonitor(
-                checkpoint, env, self.observations, EPISODE_DURATION
+                checkpoint, env, self.observations, self.duration
             )
         self.context = zmq.Context()
         self.states = socket(
@@ -76,8 +89,11 @@ class GrailRuntime:
     def reset(self):
         self.episode += 1
         self.episode_id = f"{self.session}:{self.episode}"
+        # Keep the recovery scene fixed so changes between runs come from the
+        # sampled grasp pose. The regular carry reset still randomizes the scene.
+        scene_rng = self.rng if self.recovery is None else np.random.default_rng(self.seed)
         self.plan, details = reset_scene(
-            self.model, self.data, self.cfg, self.manifest, self.initial, self.rng, self.planner
+            self.model, self.data, self.cfg, self.manifest, self.initial, scene_rng, self.planner
         )
         self.task = CarryTask(self.plan, self.planner.pickup_settle_s)
         self.observations.reset()
@@ -96,7 +112,27 @@ class GrailRuntime:
         self.arm_at = None
         self.step_count = 0
         self.reported_events = set()
-        self.event("reset", **details)
+        if self.recovery is None:
+            self.event("reset", **details)
+            return
+        if self.recovery_future is not None:
+            self.recovery_future.cancel()
+        self.phase = "preparing"
+        # Keep publishing LowState while IK runs. A slow reset on the
+        # simulation thread would make the decoder stop receiving feedback.
+        self.recovery_future = self.recovery_executor.submit(
+            self.prepare_recovery, self.data.qpos.copy(),
+            self.data.mocap_pos.copy(), self.data.mocap_quat.copy(), details,
+        )
+
+    def prepare_recovery(self, qpos, mocap_pos, mocap_quat, reset_details):
+        scratch = mujoco.MjData(self.model)
+        scratch.qpos[:] = qpos
+        scratch.mocap_pos[:] = mocap_pos
+        scratch.mocap_quat[:] = mocap_quat
+        mujoco.mj_forward(self.model, scratch)
+        recovery_details = self.recovery.apply(scratch, self.rng)
+        return scratch.qpos.copy(), dict(reset_details, recovery=recovery_details)
 
     def send_decoder(self, token, left, right):
         self.decoder.send(
@@ -191,6 +227,16 @@ class GrailRuntime:
         )
 
     def before_step(self):
+        if self.phase == "preparing":
+            if self.recovery_future.done():
+                qpos, details = self.recovery_future.result()
+                self.recovery_future = None
+                self.data.qpos[:] = qpos
+                mujoco.mj_forward(self.model, self.data)
+                self.phase = "flushing"
+                self.reset_at = time.monotonic()
+                self.event("reset", episode_duration_s=self.duration, **details)
+            return False
         now = time.monotonic()
         self.poll_action()
         if self.phase != "running":
@@ -246,7 +292,7 @@ class GrailRuntime:
                 self.observations.history = None
                 self.publish_observation()
             return False
-        if self.data.time + 1e-9 >= EPISODE_DURATION:
+        if self.data.time + 1e-9 >= self.duration:
             if self.reward_value is not None:
                 self.reward_value.finish(self.episode, self.step_count + 1, timeout=True)
             self.event("episode_end", task_events=self.task.events)
@@ -299,6 +345,8 @@ class GrailRuntime:
         return True
 
     def close(self):
+        if self.recovery_executor is not None:
+            self.recovery_executor.shutdown(wait=True, cancel_futures=True)
         for stream in (self.states, self.actions, self.decoder, self.debug):
             stream.close(0)
         self.context.term()

@@ -163,18 +163,21 @@ class GrailActor:
         return results
 
 
+def finger_primitive_targets(config, side, closed):
+    """Map named Dex3 primitive targets to physical radians."""
+    primitive = config["manager_env"]["config"]["finger_primitive"]["primitive_action_map"][side]
+    positions = primitive["pos_1" if closed else "pos_0"]
+    return {
+        name: value * (0.30625 if "thumb_0" in name else 0.7)
+        for name, value in zip(primitive["dof_names"], positions)
+    }
+
+
 def finger_targets(action, config):
     """Physical radians in Dex3 thumb0/1/2, middle0/1, index0/1 order."""
     result = []
     for i, side in enumerate(("left", "right")):
-        primitive = config["manager_env"]["config"]["finger_primitive"]["primitive_action_map"][
-            side
-        ]
-        positions = primitive["pos_1"] if action[64 + i] >= 0 else primitive["pos_0"]
-        targets = {
-            name: value * (0.30625 if "thumb_0" in name else 0.7)
-            for name, value in zip(primitive["dof_names"], positions)
-        }
+        targets = finger_primitive_targets(config, side, action[64 + i] >= 0)
         order = [
             f"{side}_hand_{part}_joint"
             for part in (
