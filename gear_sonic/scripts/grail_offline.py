@@ -6,7 +6,7 @@ from pathlib import Path
 from gear_sonic.utils.grail.checkpoints import DEFAULT_CHECKPOINT
 
 ROOT = Path(__file__).resolve().parents[2]
-GRAIL = ROOT.parent / "GRAIL"
+GRAIL_ASSETS = ROOT / "gear_sonic/data/grail"
 
 
 def positive_int(value):
@@ -25,12 +25,12 @@ def parser():
     p = commands.add_parser("collect", help="record complete simulation-clock episodes")
     p.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT,
                    help=".pt file or directory (newest complete .pt)")
-    p.add_argument("--dataset-dir", type=Path, default=GRAIL / "data/hf_dataset/data_update/data/pickup_table_slowturn_300")
-    p.add_argument("--initial-pose", type=Path, default=GRAIL / "imports/SONIC/models/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl")
+    p.add_argument("--dataset-dir", type=Path, default=GRAIL_ASSETS / "pickup_table_slowturn_300")
+    p.add_argument("--initial-pose", type=Path, default=GRAIL_ASSETS / "init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl")
     p.add_argument("--scene-config", type=Path, default=ROOT / "gear_sonic/config/grail/apple_2.yaml")
     p.add_argument("--robot-scene", type=Path, default=ROOT / "gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml")
     p.add_argument("--object-key", default="pickup_table__soap_dispenser_0__001")
-    p.add_argument("--cache-dir", type=Path, default=ROOT / "outputs/grail_asset_cache")
+    p.add_argument("--cache-dir", type=Path, help="override the preconverted asset directory")
     p.add_argument("--decoder-model", type=Path, default=ROOT / "gear_sonic_deploy/policy/grail_model/model_decoder_grail.onnx")
     p.add_argument("--decoder-executable", type=Path, default=ROOT / "gear_sonic_deploy/target/release/grail_offline_decoder")
     p.add_argument("--output", type=Path, required=True)

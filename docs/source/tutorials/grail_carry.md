@@ -1,21 +1,26 @@
 # GRAIL G1 抓取搬运启动
 
-以下命令在仓库根目录执行；仿真与策略使用 `gr00t-sim`，资产准备使用 `grail`。
-将策略和预测权重的训练配置 `config.yaml` 放在对应的 `.pt` 文件同目录下。
+以下命令在仓库根目录执行。首次克隆后执行 `git lfs pull`，下载策略、decoder、3DGS 和物体资产。默认策略和预测权重的 `config.yaml` 随仓库提供。更换权重时，将对应训练配置放在 `.pt` 文件同目录下。
+
+## 安装
+
+按 [GRAIL Conda 环境配置](../getting_started/grail_environment.md)安装 `gr00t-sim` 并编译 decoder。默认资产已经预转换，启动直接读取 `gear_sonic/data/grail/prepared_assets/pickup_table_slowturn_300/`。
 
 ## 一键启动
 
-在 GNOME 桌面终端执行，自动准备资产并打开仿真、策略、decoder 和两路相机终端：
+在已配置运行环境变量的 GNOME 桌面终端执行，打开仿真、策略、decoder 和两路相机终端。
 
 ```bash
+conda activate gr00t-sim
 DEVICE=cuda:0 CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   bash gear_sonic/scripts/run_grail_carry.sh
 ```
 
-更换物体或策略推理设备：
+加载完整的 `1600obj` 及配套预转换目录后，可以切换物体。以下示例选择其中一个苹果。
 
 ```bash
-OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
+DATASET_DIR=gear_sonic/data/grail/1600obj \
+  OBJECT_KEY=pickup_table__apple_13__001 DEVICE=cuda:0 \
   CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   bash gear_sonic/scripts/run_grail_carry.sh
 ```
@@ -23,9 +28,13 @@ OBJECT_KEY=pickup_table__apple_2__002 DEVICE=cuda:0 \
 | 环境变量 | 说明 |
 |---|---|
 | `OBJECT_KEY` | 物体标识，默认 `pickup_table__soap_dispenser_0__001` |
+| `DATASET_DIR` | 资产目录，默认 `gear_sonic/data/grail/pickup_table_slowturn_300`，包含默认物体 |
+| `INITIAL_POSE` | 初始姿态，默认使用仓库内提供的姿态 |
+| `GRAIL_CACHE_DIR` | 覆盖预转换目录，默认按 `DATASET_DIR` 的目录名从 `gear_sonic/data/grail/prepared_assets/` 读取 |
+| `SIM_PYTHON` | 覆盖解释器，默认使用当前终端的 `python` |
 | `DEVICE` | 顶层策略推理设备，默认 `cpu`，可设为 `cuda:0` |
 | `CHECKPOINT` | 策略权重文件或目录，默认使用示例中的 `last.pt`。传入目录时按修改时间选择最新完整 `.pt` |
-| `REWARD_VALUE_CHECKPOINT` | `CarryRewardValue` 权重文件或目录，默认使用同一个 `last.pt`。显式指定旧版策略 `model_step_009000.pt` 时仍可使用新版权重显示预测 |
+| `REWARD_VALUE_CHECKPOINT` | `CarryRewardValue` 权重文件或目录，默认使用同一个 `last.pt`。将 `CHECKPOINT` 指向仓库内 `1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt` 时，仍可使用新版权重显示预测 |
 
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。
 退出时，仿真、策略和 decoder 终端分别按 **Ctrl+C**，相机窗口按 **Q**。
@@ -40,35 +49,33 @@ Decoder 开始 streaming 且仿真完成启动等待后，MuJoCo 窗口左上角
 
 ## 分终端启动
 
-### 终端 1：准备资产并启动仿真
+### 终端 1：启动仿真
 
 ```bash
 (
   set -e
-  cd /home/tide/robot/GR00T-WholeBodyControl
+  conda activate gr00t-sim
   OBJECT_KEY=pickup_table__soap_dispenser_0__001
+  DATASET_DIR=gear_sonic/data/grail/pickup_table_slowturn_300
+  mkdir -p outputs
 
-  /home/tide/miniconda3/envs/grail/bin/python -m gear_sonic.scripts.prepare_grail_assets \
-    --dataset-dir /home/tide/robot/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_300 \
-    --object-key "$OBJECT_KEY" --cache-dir /tmp/sonic-grail-assets
-
-  /home/tide/miniconda3/envs/gr00t-sim/bin/python -m gear_sonic.scripts.run_sim_loop \
+  python -m gear_sonic.scripts.run_sim_loop \
     --env-name grail \
-    --dataset-dir /home/tide/robot/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_300 \
-    --initial-pose-file /home/tide/robot/GRAIL/imports/SONIC/models/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl \
+    --dataset-dir "$DATASET_DIR" \
+    --initial-pose-file gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl \
     --scene-config gear_sonic/config/grail/apple_2.yaml \
     --object-key "$OBJECT_KEY" \
-    --grail-cache-dir /tmp/sonic-grail-assets --grail-seed 42 \
+    --grail-seed 42 \
     --grail-reward-value-checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
     --enable-image-publish --render-backend both --isaac-headless \
-    --grail-log /tmp/grail-episodes.jsonl --verbose-timing
+    --grail-log outputs/grail-episodes.jsonl --verbose-timing
 )
 ```
 
 | 参数 | 说明 |
 |---|---|
-| `--dataset-dir` / `--object-key` | 资产目录与物体标识，准备和仿真时需保持一致 |
-| `--cache-dir` / `--grail-cache-dir` | 资产准备和仿真使用的同一缓存目录 |
+| `--dataset-dir` / `--object-key` | 原始资产目录与物体标识 |
+| `--grail-cache-dir` | 覆盖预转换目录，与转换命令的 `--cache-dir` 对应 |
 | `--initial-pose-file` | 机器人初始姿态文件 |
 | `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用 3DGS 背景和拟合桌面碰撞 |
 | `--grail-seed` | 随机种子，默认 `42` |
@@ -84,8 +91,8 @@ Decoder 开始 streaming 且仿真完成启动等待后，MuJoCo 窗口左上角
 ### 终端 2：启动顶层策略
 
 ```bash
-cd /home/tide/robot/GR00T-WholeBodyControl
-/home/tide/miniconda3/envs/gr00t-sim/bin/python -m gear_sonic.scripts.run_grail_policy \
+conda activate gr00t-sim
+python -m gear_sonic.scripts.run_grail_policy \
   --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   --device cpu --threads 1
 ```
@@ -122,14 +129,12 @@ cd /home/tide/robot/GR00T-WholeBodyControl
 
 该请求不进入策略观测，也不额外屏蔽 sparse command；旧版桌角、8 维接触力观测和 `drop_button` 已删除。
 
-示例仍使用本机已有的 `pickup_table_slowturn_300` 物体资产。训练命令中的 `pickup_table_slowturn_1600_no_release` 未下载到本机；可通过资产准备及仿真的 `--dataset-dir` 同步切换。物理推理不读取机器人参考 motion。
+仓库内提供默认洗手液物体的原始资产和预转换结果。其他物体的目录布局见[批量准备其他物体](../getting_started/grail_environment.md#批量准备其他物体)。物理推理不读取机器人参考 motion。
 
 ### 终端 3：启动 C++ decoder
 
 ```bash
-cd /home/tide/robot/GR00T-WholeBodyControl/gear_sonic_deploy
-source /opt/ros/jazzy/setup.bash
-export LD_LIBRARY_PATH="/home/tide/robot/TensorRT-10.13.2.6/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+cd gear_sonic_deploy
 
 ./target/release/g1_deploy_onnx_ref lo \
   policy/grail_model/model_decoder_grail.onnx reference/example \
@@ -149,15 +154,17 @@ MuJoCo 和 Isaac 共用 `gear_sonic/data/robot_model/model_data/g1/g1_29dof_with
 以下两条命令分别在独立终端执行：
 
 ```bash
-/home/tide/miniconda3/envs/gr00t-sim/bin/python \
-  gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5555
+conda activate gr00t-sim
+python -m gear_sonic.scripts.run_camera_viewer --camera-host localhost --camera-port 5555
 ```
 
 ```bash
-/home/tide/miniconda3/envs/gr00t-sim/bin/python \
-  gear_sonic/scripts/run_camera_viewer.py --camera-host localhost --camera-port 5559
+conda activate gr00t-sim
+python -m gear_sonic.scripts.run_camera_viewer --camera-host localhost --camera-port 5559
 ```
 
 `--camera-host` 指定图像服务器；双渲染时 `5555` 为 Isaac、`5559` 为 MuJoCo，单渲染时使用 `5555`。`--fps` 指定录像帧率，默认 `30`；`--output-path` 指定录像目录，默认 `camera_recordings/`。
+
+蓝色搬运目标、绿色释放目标和红色质心指示球仅在 MuJoCo 中显示。
 
 相机窗口按 **R** 开始或停止录像，按 **Q** 关闭；MuJoCo 交互窗口按 **Backspace** 重置场景。

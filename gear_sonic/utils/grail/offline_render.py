@@ -150,6 +150,19 @@ def run_children(jobs, directory, name):
                 process.wait()
 
 
+def scene_assets(scene_path):
+    """Resolve scene-relative assets and dataset-relative object dependencies."""
+    scene = json.loads(scene_path.read_text())
+    manifest = scene["manifest"]
+    source = scene_path.parent / manifest["source"]
+    dataset = source.parent.parent  # object_usd/<object-key>.usd
+    dependencies = [dataset / name for name in manifest["dependencies"]]
+    background = scene["config"].get("isaac_scene")
+    if background and background.get("enabled"):
+        background["asset_path"] = str(scene_path.parent / background["asset_path"])
+    return source, dependencies, background
+
+
 def render_identity(paths, requested, encode_workers, gpu):
     """Fingerprint assets and implementation without launching a renderer."""
     from importlib import metadata
@@ -157,15 +170,14 @@ def render_identity(paths, requested, encode_workers, gpu):
     from .render_pipeline import ROBOT_MJCF
 
     scene_path = paths[0].parent / json.loads(paths[0].read_text())["scene"]
-    scene = json.loads(scene_path.read_text())
+    source, dependencies, background = scene_assets(scene_path)
     assets = [
-        scene["manifest"]["source"],
+        source,
         Path(__file__).parents[2] / "data/robots/g1/g1_43dof_s3.usda",
         ROBOT_MJCF,
-        *scene["manifest"]["dependencies"],
+        *dependencies,
     ]
-    background = scene["config"].get("isaac_scene", {})
-    if background.get("enabled"):
+    if background and background.get("enabled"):
         assets.append(background["asset_path"])
     visual_dir = Path(__file__).parents[1] / "mujoco_sim"
     implementation = [
@@ -183,7 +195,7 @@ def render_identity(paths, requested, encode_workers, gpu):
         config=VISUAL_CONFIG,
         requested=requested,
         encode_workers=encode_workers,
-        assets={str(p): digest_file(p) for p in assets},
+        assets={os.path.relpath(p, scene_path.parent): digest_file(p) for p in assets},
         implementation={str(p): digest_file(p) for p in implementation},
     )
 
@@ -322,11 +334,6 @@ def run_jobs(job):
     app = create_camera_app()
     visual = None
     try:
-        if job.get("prepare_assets"):
-            from .assets import prepare_assets
-
-            prepare_assets(job["dataset_dir"], job["object_key"], job["cache_dir"])
-            return
         from concurrent.futures import ProcessPoolExecutor
         import multiprocessing as mp
 
@@ -339,11 +346,9 @@ def run_jobs(job):
         meta = json.loads(first.read_text())
         scene_path = (first.parent / meta["scene"]).resolve()
         model_path = (first.parent / meta["model"]).resolve()
-        scene = json.loads(scene_path.read_text())
+        source, _, background = scene_assets(scene_path)
         model = load_replay_model(model_path)
-        visual = IsaacVisual(
-            app, model, job["output"], scene["config"].get("isaac_scene"), scene["manifest"]["source"]
-        )
+        visual = IsaacVisual(app, model, job["output"], background, str(source))
         job["startup_s"] = booted - boot_started
         job["scene_load_s"] = time.perf_counter() - booted
         with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as pool:

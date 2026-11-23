@@ -230,6 +230,29 @@ models/
 !/gear_sonic/data/scene/deploy/
 /gear_sonic/data/scene/deploy/*
 !/gear_sonic/data/scene/deploy/scene_combined_3dgs.usda
+!/gear_sonic/data/scene/deploy/splats.nurec
+!/gear_sonic/data/grail/
+/gear_sonic/data/grail/*
+!/gear_sonic/data/grail/README.md
+!/gear_sonic/data/grail/init_g1_state/
+/gear_sonic/data/grail/init_g1_state/*
+!/gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl
+!/gear_sonic/data/grail/pickup_table_slowturn_300/
+/gear_sonic/data/grail/pickup_table_slowturn_300/**
+!/gear_sonic/data/grail/pickup_table_slowturn_300/**/
+!/gear_sonic/data/grail/pickup_table_slowturn_300/bps/pickup_table__soap_dispenser_0__001.npy
+!/gear_sonic/data/grail/pickup_table_slowturn_300/object_usd/pickup_table__soap_dispenser_0__001.usd
+!/gear_sonic/data/grail/pickup_table_slowturn_300/object_usd/textures/pickup_table__soap_dispenser_0__001/material_0.png
+
+# Share the default prepared object in Git, keep bulk conversions alongside it.
+!/gear_sonic/data/grail/prepared_assets/
+/gear_sonic/data/grail/prepared_assets/*
+!/gear_sonic/data/grail/prepared_assets/pickup_table_slowturn_300/
+
+# Checkpoints and decoder referenced by the GRAIL tutorials.
+!/gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt
+!/gear_sonic_deploy/policy/grail_grasp_policy/1109robocasa_carry_table-randomized-20261108_164252/model_step_009000.pt
+!/gear_sonic_deploy/policy/grail_model/model_decoder_grail.onnx
 
 # Downloaded from HuggingFace (hf download)
 sample_data/

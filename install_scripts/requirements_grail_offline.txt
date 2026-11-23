@@ -1,5 +1,6 @@
 # Keep Isaac Sim 5.0's NumPy ABI and avoid upgrading the existing CUDA stack.
 numpy==1.26.0
+trimesh==4.5.1
 pandas==2.2.3
 pyarrow==19.0.1
 datasets==3.6.0

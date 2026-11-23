@@ -1,16 +1,18 @@
 # GRAIL 离线采集与 Isaac 批量渲染
 
 在仓库根目录执行，依次采集轨迹、渲染图像、标注并导出 GR00T N1.7 数据集。
-采集使用的 `.pt` 权重文件和对应训练配置 `config.yaml` 需放在同一目录下。
+默认权重及同目录的训练配置 `config.yaml` 随仓库提供。更换权重时，将对应训练配置放在 `.pt` 文件同目录下。
 
 ## 安装
 
+按 [GRAIL Conda 环境配置](../getting_started/grail_environment.md)拉取 Git LFS 文件并配置 `gr00t-sim`、Isaac Sim 和 TensorRT 环境。离线采集直接读取预转换资产。随后安装离线依赖。
+
 ```bash
-bash install_scripts/install_grail_offline.sh
 conda activate gr00t-sim
+bash install_scripts/install_grail_offline.sh
 ```
 
-安装脚本默认使用 `/home/tide/miniconda3/envs/gr00t-sim/bin/python`，可通过环境变量 `PYTHON` 指定解释器。
+安装脚本默认使用当前环境的 `python`，可通过环境变量 `PYTHON` 指定解释器。导出需要在该环境中安装与 PyTorch 版本匹配的 torchvision。
 
 ## 采集轨迹
 
@@ -36,10 +38,10 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--initial-pose` | 机器人初始姿态文件 |
 | `--dataset-dir` / `--object-key` | GRAIL 资产目录与物体标识，默认物体为 `pickup_table__soap_dispenser_0__001` |
 | `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用拟合桌面碰撞；渲染使用 `scene_combined_3dgs.usda` 及同目录的 `splats.nurec` |
-| `--cache-dir` | 资产缓存目录，默认 `outputs/grail_asset_cache` |
+| `--cache-dir` | 覆盖预转换目录，默认按 `--dataset-dir` 的目录名从 `gear_sonic/data/grail/prepared_assets/` 读取 |
 | `--no-release-override` | 同时关闭强制张开双手和松手后的 latent 锁定 |
 
-采集与实时入口共用同一默认场景。物体沿用原来的 XY 采样范围，在 `0.76935 m` 高的桌面上初始化。渲染读取采集时记录在 `scene.json` 中的场景配置。
+采集与实时入口共用同一默认场景。物体沿用原来的 XY 采样范围，在 `0.76935 m` 高的桌面上初始化。渲染读取采集时记录的 `scene.json`，以该文件所在目录解析物体和场景路径。迁移轨迹时需保留轨迹与资产之间的相对目录布局。
 
 采集与实时入口共用新版 GRAIL 的观测及 reference-free sparse command，完整逐项定义见 [观测对齐说明](grail_carry.md#新版-grail-观测与-sparse-command)。仅支持 `805 + 79 = 884` 维 checkpoint：`policy_proprio` 保存 `[N,5,161]`，`policy_task` 保存 `[N,79]`；旧的桌角、8 维接触力和 `drop_button` 不再作为策略输入。`scene.json` 记录实际选中的权重文件。
 
@@ -47,7 +49,7 @@ python -m gear_sonic.scripts.grail_offline collect \
 
 松手逻辑也与实时入口一致。收到 `release_requested` 后，该环境锁定上一拍的 latent 和 FSQ token，持续张开双手，并暂停该环境的顶层策略推理，直至下一轮复位。decoder 继续按每拍的本体状态生成关节目标。`release_requested` 和实际使用的动作写入轨迹。
 
-默认资产目录仍为本机已有的 `pickup_table_slowturn_300`。若要换用训练使用的 `pickup_table_slowturn_1600_no_release`，下载后通过 `--dataset-dir` 指定；采集不读取机器人参考 motion。
+默认资产目录为 `gear_sonic/data/grail/pickup_table_slowturn_300`。用 `--dataset-dir gear_sonic/data/grail/1600obj --object-key pickup_table__apple_13__001` 可选择配套资产中的苹果。目录布局见[批量准备其他物体](../getting_started/grail_environment.md#批量准备其他物体)。采集不读取机器人参考 motion。
 
 ## 渲染图像
 
@@ -69,6 +71,8 @@ python -m gear_sonic.scripts.grail_offline render \
 第一人称 RGB 视频使用与实时推理相同的 D435i 模拟配置。新采集把相机参数保存到 `model.mjb`。用旧默认相机采集的轨迹可以直接重渲染，旧视频可用 `--resume` 或 `--overwrite` 更新。[实时推理教程](grail_carry.md)
 
 输出为 640×480、50 FPS 的 `ego_view.mp4`。视频逐帧对应 50 Hz 的策略轨迹，实际渲染不限速。采集环境数与渲染并发数独立设置。
+
+Isaac 视频省略 MuJoCo 中的目标和质心指示球。已有视频可用 `--resume` 重新渲染。
 
 ## 标注与导出
 

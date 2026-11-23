@@ -110,7 +110,7 @@ sudo usermod -aG docker $USER
 newgrp docker
 
 # 2. Set TensorRT path on x86_64 (add to ~/.bashrc for persistence)
-export TensorRT_ROOT=/home/tide/robot/TensorRT-10.13.2.6
+export TensorRT_ROOT="$HOME/TensorRT-10.13.2.6"
 
 # 3. Launch container
 cd gear_sonic_deploy

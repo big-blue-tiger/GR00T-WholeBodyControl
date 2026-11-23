@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import resource
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -77,28 +76,26 @@ def prepare_scene(args):
     output.mkdir(parents=True, exist_ok=True)
     if list(output.glob("episode_*")):
         raise FileExistsError(f"collection directory already contains episodes: {output}")
-    # gr00t-sim gets pxr from Kit, not usd-core. Prepare in a fresh Kit process,
-    # keeping all USD/native renderer libraries out of the collection process.
-    if not (args.cache_dir / args.object_key / "latest.json").is_file():
-        from .offline_render import kit_environment
-        asset_job = output / "prepare_assets.json"
-        asset_job.write_text(json.dumps(dict(
-            prepare_assets=True, dataset_dir=str(args.dataset_dir.resolve()),
-            object_key=args.object_key, cache_dir=str(args.cache_dir.resolve()),
-        )))
-        with open(output / "prepare_assets.log", "w") as log:
-            subprocess.run([sys.executable, "-m", "gear_sonic.utils.grail.offline_render", str(asset_job)],
-                           stdout=log, stderr=subprocess.STDOUT, check=True, env=kit_environment())
     model, config, manifest = build_scene(
         args.robot_scene.resolve(), args.scene_config.resolve(),
         args.dataset_dir, args.object_key, args.cache_dir,
     )
     mujoco.mj_saveModel(model, str(output / "model.mjb"))
+    background = config.get("isaac_scene", {})
+    if "asset_path" in background:
+        background["asset_path"] = os.path.relpath(background["asset_path"], output)
+    manifest["source"] = os.path.relpath(manifest["source"], output)
+    # Dependency names remain relative to the dataset's object_usd/ parent.
+    manifest["dependencies"] = {
+        os.path.relpath(args.dataset_dir / name, args.dataset_dir): digest
+        for name, digest in manifest["dependencies"].items()
+    }
     scene = dict(
         config=config, manifest=manifest, fps=50, width=640, height=480,
-        initial_pose=str(args.initial_pose.resolve()), checkpoint=str(args.checkpoint.resolve()),
-        decoder=str(args.decoder_model.resolve()), task=args.task,
-        scene_config=str(args.scene_config.resolve()), object_key=args.object_key,
+        initial_pose=os.path.relpath(args.initial_pose, output),
+        checkpoint=os.path.relpath(args.checkpoint, output),
+        decoder=os.path.relpath(args.decoder_model, output), task=args.task,
+        scene_config=os.path.relpath(args.scene_config, output), object_key=args.object_key,
         release_override=not args.no_release_override,
         mujoco_version=mujoco.__version__,
     )

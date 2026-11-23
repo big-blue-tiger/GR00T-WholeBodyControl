@@ -7,12 +7,20 @@ SDF in PhysX; MuJoCo uses its convex hull, recorded explicitly in the manifest.
 
 import hashlib
 import json
+from os.path import relpath
 from pathlib import Path
 import shutil
 
 import numpy as np
 
-CONVERTER_VERSION = 1
+CONVERTER_VERSION = 2
+PREPARED_ASSETS = Path(__file__).resolve().parents[2] / "data/grail/prepared_assets"
+
+
+def prepared_directory(dataset_dir, cache_dir=None):
+    if cache_dir is not None:
+        return Path(cache_dir).resolve()
+    return PREPARED_ASSETS / Path(dataset_dir).resolve().name
 
 
 def asset_paths(dataset_dir, object_key):
@@ -29,10 +37,11 @@ def asset_paths(dataset_dir, object_key):
     return usd, bps
 
 
-def prepare_assets(dataset_dir, object_key, cache_dir):
+def prepare_assets(dataset_dir, object_key, cache_dir=None):
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
     import trimesh
 
+    dataset_dir = Path(dataset_dir).resolve()
     usd, bps = asset_paths(dataset_dir, object_key)
     stage = Usd.Stage.Open(str(usd))
     if not stage or not stage.GetDefaultPrim():
@@ -46,9 +55,8 @@ def prepare_assets(dataset_dir, object_key, cache_dir):
         for attr in prim.GetAttributes():
             value = attr.Get()
             if isinstance(value, Sdf.AssetPath) and value.path:
-                # Built-in OmniPBR is translated to a local preview surface;
-                # it is a shader module, not a missing dataset texture.
-                if value.path == "OmniPBR.mdl":
+                # Isaac supplies these shader modules separately from the dataset.
+                if value.path in ("OmniPBR.mdl", "OmniPBR_Opacity.mdl"):
                     continue
                 resolved = (
                     Path(value.resolvedPath) if value.resolvedPath else usd.parent / value.path
@@ -56,16 +64,19 @@ def prepare_assets(dataset_dir, object_key, cache_dir):
                 if not resolved.is_file():
                     raise FileNotFoundError(f"Unresolved USD asset {prim.GetPath()} {value.path}")
                 dependencies.add(resolved.resolve())
-    hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(dependencies)}
+    hashes = {
+        relpath(p, dataset_dir): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(dependencies)
+    }
     digest = hashlib.sha256(
         json.dumps([CONVERTER_VERSION, hashes, "sdf-to-convex-hull", 0.1], sort_keys=True).encode()
     ).hexdigest()
-    destination = Path(cache_dir).resolve() / object_key / digest[:20]
+    destination = prepared_directory(dataset_dir, cache_dir) / object_key / digest[:20]
     manifest_path = destination / "manifest.json"
+    pointer = destination.parent / "latest.json"
+    pointer_data = json.dumps({"manifest": str(manifest_path.relative_to(pointer.parent))})
     if manifest_path.is_file():
-        (destination.parent / "latest.json").write_text(
-            json.dumps({"manifest": str(manifest_path)})
-        )
+        pointer.write_text(pointer_data)
         return manifest_path
     destination.mkdir(parents=True, exist_ok=True)
     cache = UsdGeom.XformCache()
@@ -160,7 +171,7 @@ def prepare_assets(dataset_dir, object_key, cache_dir):
     manifest = dict(
         version=CONVERTER_VERSION,
         object_key=object_key,
-        source=str(usd),
+        source=relpath(usd, dataset_dir),
         dependencies=hashes,
         digest=digest,
         bps=np.load(bps).tolist(),
@@ -178,26 +189,32 @@ def prepare_assets(dataset_dir, object_key, cache_dir):
         ],
         collision_note="PhysX SDF replaced by MuJoCo mesh convex hull; no attachment constraints",
     )
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    # Stable pointer permits the physics environment to use a prepared cache
-    # without loading USD bindings, while still verifying its source hashes.
-    (destination.parent / "latest.json").write_text(json.dumps({"manifest": str(manifest_path)}))
+    # Publish only after all meshes and textures are in place.
+    temporary_manifest = manifest_path.with_suffix(".tmp")
+    temporary_manifest.write_text(json.dumps(manifest, separators=(",", ":")))
+    temporary_manifest.replace(manifest_path)
+    pointer.write_text(pointer_data)
     return manifest_path
 
 
-def load_assets(dataset_dir, object_key, cache_dir):
+def load_assets(dataset_dir, object_key, cache_dir=None):
+    dataset_dir = Path(dataset_dir).resolve()
     usd, _ = asset_paths(dataset_dir, object_key)
-    pointer = Path(cache_dir).resolve() / object_key / "latest.json"
+    cache_dir = prepared_directory(dataset_dir, cache_dir)
+    pointer = cache_dir / object_key / "latest.json"
     if not pointer.is_file():
         raise FileNotFoundError(
-            "Prepare USD cache first: python -m gear_sonic.scripts.prepare_grail_assets "
+            "Missing preconverted GRAIL asset. Install the prepared assets or run "
+            "python -m gear_sonic.scripts.prepare_grail_assets "
             f"--dataset-dir {dataset_dir} --object-key {object_key} --cache-dir {cache_dir}"
         )
-    path = Path(json.loads(pointer.read_text())["manifest"])
+    path = pointer.parent / json.loads(pointer.read_text())["manifest"]
     manifest = json.loads(path.read_text())
-    if manifest["object_key"] != object_key or Path(manifest["source"]) != usd:
+    if manifest["object_key"] != object_key or dataset_dir / manifest["source"] != usd:
         raise ValueError("Cache belongs to a different object/dataset; prepare it again")
     for filename, digest in manifest["dependencies"].items():
-        if hashlib.sha256(Path(filename).read_bytes()).hexdigest() != digest:
+        if hashlib.sha256((dataset_dir / filename).read_bytes()).hexdigest() != digest:
             raise ValueError(f"Asset cache is stale: {filename}; prepare again")
+    # Isaac needs the original USD to preserve its materials and visual mesh.
+    manifest["source"] = str(usd)
     return path, manifest

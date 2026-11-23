@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-PYTHON=${PYTHON:-/home/tide/miniconda3/envs/gr00t-sim/bin/python}
+PYTHON=${PYTHON:-python}
 
 "$PYTHON" -m pip install --no-deps \
   'lerobot @ git+https://github.com/huggingface/lerobot.git@a445d9c9da6bea99a8972daa4fe1fdd053d711d2'

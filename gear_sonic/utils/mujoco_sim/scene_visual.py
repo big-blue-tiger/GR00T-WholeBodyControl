@@ -25,16 +25,14 @@ class SceneVisual:
                 # Use the authored USD mesh/UVs/OmniPBR, without also drawing
                 # the converted MuJoCo mesh at the same location.
                 continue
-            path = "/Task/" + name
             kind = model.geom_type[i]
-            if kind == mujoco.mjtGeom.mjGEOM_BOX:
-                geom = UsdGeom.Cube.Define(stage, path)
-                geom.CreateSizeAttr(2.0)
-            elif kind == mujoco.mjtGeom.mjGEOM_SPHERE:
-                geom = UsdGeom.Sphere.Define(stage, path)
-                geom.CreateRadiusAttr(float(model.geom_size[i, 0]))
-            else:
+            # Task spheres are debug markers for the native MuJoCo renderer.
+            if kind == mujoco.mjtGeom.mjGEOM_SPHERE:
+                continue
+            if kind != mujoco.mjtGeom.mjGEOM_BOX:
                 raise ValueError(f"Unsupported task geometry {name}")
+            geom = UsdGeom.Cube.Define(stage, "/Task/" + name)
+            geom.CreateSizeAttr(2.0)
             geom.CreateDisplayColorAttr([Gf.Vec3f(*map(float, model.geom_rgba[i, :3]))])
             if name == "grail_table_geom" and not show_colliders:
                 geom.MakeInvisible()
@@ -85,8 +83,7 @@ class SceneVisual:
             self.object_op.Set(Gf.Matrix4d(matrix.T.tolist()))
         for index, op in self.ops.items():
             matrix = self.world_matrix(data.geom_xpos[index], data.geom_xmat[index])
-            if self.model.geom_type[index] == mujoco.mjtGeom.mjGEOM_BOX:
-                matrix[:3, :3] = matrix[:3, :3] @ np.diag(self.model.geom_size[index])
+            matrix[:3, :3] = matrix[:3, :3] @ np.diag(self.model.geom_size[index])
             op.Set(Gf.Matrix4d(matrix.T.tolist()))
 
 

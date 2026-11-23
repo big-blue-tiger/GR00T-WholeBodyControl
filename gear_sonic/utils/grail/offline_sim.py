@@ -1,6 +1,7 @@
 """MuJoCo CPU workers. No GPU, DDS, policy, or renderer imports."""
 
 import json
+from os.path import relpath
 import pickle
 import resource
 import time
@@ -148,8 +149,10 @@ class OfflineEnvironment:
         metadata = dict(
             episode_index=self.episode, env_id=self.env_id, seed=self.seed, label="unlabeled",
             fps=50, physics_dt=.005, transitions=self.steps, task=self.scene["task"],
-            scene="../scene.json", model="../model.mjb", checkpoint=self.scene["checkpoint"],
-            decoder=self.scene["decoder"], initial_pose=self.scene["initial_pose"],
+            scene="../scene.json", model="../model.mjb",
+            checkpoint=relpath(self.output / self.scene["checkpoint"], directory),
+            decoder=relpath(self.output / self.scene["decoder"], directory),
+            initial_pose=relpath(self.output / self.scene["initial_pose"], directory),
             task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
         )
         (directory / "episode.json").write_text(json.dumps(metadata, indent=2))
@@ -160,9 +163,10 @@ class OfflineEnvironment:
 
 def simulation_worker(connection, options, assignments):
     try:
-        scene = json.loads((Path(options["output"]) / "scene.json").read_text())
-        model = mujoco.MjModel.from_binary_path(str(Path(options["output"]) / "model.mjb"))
-        with open(scene["initial_pose"], "rb") as stream:
+        output = Path(options["output"])
+        scene = json.loads((output / "scene.json").read_text())
+        model = mujoco.MjModel.from_binary_path(str(output / "model.mjb"))
+        with (output / scene["initial_pose"]).open("rb") as stream:
             initial = pickle.load(stream)
         envs = {env_id: OfflineEnvironment(model, scene, initial, env_id, options["output"], options["steps"])
                 for env_id in assignments}

@@ -10,26 +10,29 @@ DEVICE=${DEVICE:-cpu}
 DEFAULT_CHECKPOINT=gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt
 CHECKPOINT=${CHECKPOINT:-$DEFAULT_CHECKPOINT}
 REWARD_VALUE_CHECKPOINT=${REWARD_VALUE_CHECKPOINT:-$DEFAULT_CHECKPOINT}
-PREP_PYTHON=/home/tide/miniconda3/envs/grail/bin/python
-SIM_PYTHON=/home/tide/miniconda3/envs/gr00t-sim/bin/python
-DATASET_DIR=/home/tide/robot/GRAIL/data/hf_dataset/data_update/data/pickup_table_slowturn_300
+SIM_PYTHON=${SIM_PYTHON:-$(command -v python)}
+DATASET_DIR=${DATASET_DIR:-gear_sonic/data/grail/pickup_table_slowturn_300}
+INITIAL_POSE=${INITIAL_POSE:-gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl}
+cache_args=()
+if [[ -n ${GRAIL_CACHE_DIR:-} ]]; then
+  cache_args=(--grail-cache-dir "$GRAIL_CACHE_DIR")
+fi
 
-"$PREP_PYTHON" -m gear_sonic.scripts.prepare_grail_assets \
-  --dataset-dir "$DATASET_DIR" \
-  --object-key "$OBJECT_KEY" \
-  --cache-dir /tmp/sonic-grail-assets
+"$SIM_PYTHON" -c 'import sys; from gear_sonic.utils.grail.assets import load_assets; load_assets(*sys.argv[1:])' \
+  "$DATASET_DIR" "$OBJECT_KEY" ${GRAIL_CACHE_DIR:+"$GRAIL_CACHE_DIR"}
+mkdir -p outputs
 
 gnome-terminal --window --title="GRAIL - Simulation" --working-directory="$ROOT" -- \
   "$SIM_PYTHON" -m gear_sonic.scripts.run_sim_loop \
   --env-name grail \
   --dataset-dir "$DATASET_DIR" \
-  --initial-pose-file /home/tide/robot/GRAIL/imports/SONIC/models/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl \
+  --initial-pose-file "$INITIAL_POSE" \
   --scene-config gear_sonic/config/grail/apple_2.yaml \
   --object-key "$OBJECT_KEY" \
-  --grail-cache-dir /tmp/sonic-grail-assets --grail-seed 42 \
+  "${cache_args[@]}" --grail-seed 42 \
   --grail-reward-value-checkpoint "$REWARD_VALUE_CHECKPOINT" \
   --enable-image-publish --render-backend both --isaac-headless \
-  --grail-log /tmp/grail-episodes.jsonl --verbose-timing
+  --grail-log outputs/grail-episodes.jsonl --verbose-timing
 
 gnome-terminal --window --title="GRAIL - Policy" --working-directory="$ROOT" -- \
   "$SIM_PYTHON" -m gear_sonic.scripts.run_grail_policy \
@@ -38,8 +41,6 @@ gnome-terminal --window --title="GRAIL - Policy" --working-directory="$ROOT" -- 
 
 gnome-terminal --window --title="GRAIL - Decoder (press ] then Enter)" \
   --working-directory="$ROOT/gear_sonic_deploy" -- bash -ec '
-    source /opt/ros/jazzy/setup.bash
-    export LD_LIBRARY_PATH="/home/tide/robot/TensorRT-10.13.2.6/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     exec ./target/release/g1_deploy_onnx_ref lo \
       policy/grail_model/model_decoder_grail.onnx reference/example \
       --obs-config policy/release/observation_config.yaml \
@@ -58,7 +59,7 @@ for camera in Isaac:5555 MuJoCo:5559; do
         sleep 1
       done
       exec "$@"
-    ' grail-camera "$port" "$SIM_PYTHON" gear_sonic/scripts/run_camera_viewer.py \
+    ' grail-camera "$port" "$SIM_PYTHON" -m gear_sonic.scripts.run_camera_viewer \
     --camera-host localhost --camera-port "$port"
 done
 
