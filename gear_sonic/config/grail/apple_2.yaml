@@ -30,6 +30,9 @@ isaac_scene:
   front_edge_xy: [[-4.4, 0.726], [-3.1, 0.7927]]
   # Show the MuJoCo floor and tabletop in Isaac for alignment debugging.
   show_colliders: false
+# Red bin opening centered at (-3.568, -3.073, 0.50) in the deployed scan.
+# Offline collection releases 0.35 m above the rim after applying the scan placement.
+offline_release_position_scene: [-3.568, -3.073, 0.85]
 object:
   # Quaternion mean of objects/*.pkl root_quat[0, 0] (300 first frames, wxyz).
   quaternion_wxyz: [0.7299179939730086, 0.6821416636692589, 0.01544398874296693, 0.04079161645070567]

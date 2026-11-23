@@ -1,0 +1,3 @@
+newmtl bottle
+Kd 1 1 1
+map_Kd ../object_usd/textures/pickup_table__wahaha_ad_peach_bottle_0__000/material_0.png

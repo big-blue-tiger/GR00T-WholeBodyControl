@@ -25,23 +25,25 @@ def parser():
     p = commands.add_parser("collect", help="record complete simulation-clock episodes")
     p.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT,
                    help=".pt file or directory (newest complete .pt)")
-    p.add_argument("--dataset-dir", type=Path, default=GRAIL_ASSETS / "1600obj")
+    p.add_argument("--dataset-dir", type=Path, default=GRAIL_ASSETS / "100obj")
     p.add_argument("--initial-pose", type=Path, default=GRAIL_ASSETS / "init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl")
     p.add_argument("--scene-config", type=Path, default=ROOT / "gear_sonic/config/grail/apple_2.yaml")
     p.add_argument("--robot-scene", type=Path, default=ROOT / "gear_sonic/data/robot_model/model_data/g1/scene_43dof.xml")
-    p.add_argument("--object-key", default="pickup_table__soap_dispenser_0__001")
+    p.add_argument("--object-key", action="append",
+                   help="select an object; repeat for a subset (default: all dataset objects)")
     p.add_argument("--cache-dir", type=Path, help="override the preconverted asset directory")
     p.add_argument("--decoder-model", type=Path, default=ROOT / "gear_sonic_deploy/policy/grail_model/model_decoder_grail.onnx")
     p.add_argument("--decoder-executable", type=Path, default=ROOT / "gear_sonic_deploy/target/release/grail_offline_decoder")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--num-envs", type=int, default=1)
-    p.add_argument("--num-episodes", type=int)
+    p.add_argument("--episodes-per-object", "--num-episodes", type=positive_int, default=5,
+                   help="number of recorded trajectories per object (default: 5)")
     p.add_argument("--cpu-workers", type=int, default=4)
     p.add_argument("--duration", type=float, default=25.)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--threads", type=int, default=1)
-    p.add_argument("--task", default="Pick up the object from the table, carry it, and release it.")
+    p.add_argument("--task", default="Pick up the object from the table and release it above the red bin.")
     p.add_argument("--no-release-override", action="store_true",
                    help="Disable forced-open hands and latent hold on release requests")
     commands.add_parser("benchmark", parents=[p], add_help=False,
@@ -71,7 +73,6 @@ def main():
     args = parser().parse_args()
     if args.command in ("collect", "benchmark"):
         from gear_sonic.utils.grail.offline_collect import collect
-        args.num_episodes = args.num_episodes if args.num_episodes is not None else max(2, args.num_envs)
         collect(args)
     elif args.command == "render":
         from gear_sonic.utils.grail.offline_render import render

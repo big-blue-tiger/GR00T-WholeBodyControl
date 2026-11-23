@@ -252,6 +252,7 @@ models/
 !/gear_sonic/data/grail/1600obj/object_usd/pickup_table__soap_dispenser_0__001.usd
 !/gear_sonic/data/grail/1600obj/object_usd/textures/pickup_table__soap_dispenser_0__001/material_0.png
 !/gear_sonic/data/grail/1600obj/object_obj/pickup_table__soap_dispenser_0__001/**
+!/gear_sonic/data/grail/wahaha_ad_peach_bottle/
 
 # Legacy cache layout for other datasets.
 !/gear_sonic/data/grail/prepared_assets/

@@ -34,8 +34,6 @@ def main():
     subset.mkdir()
     for path in paths[: args.episodes]:
         (subset / path.parent.name).symlink_to(path.parent.resolve(), target_is_directory=True)
-    for name in ("scene.json", "model.mjb"):
-        (subset / name).symlink_to((args.traces / name).resolve())
     trials = []
     for index in range(args.trials):
         destination = args.output / f"trial_{index:02d}"

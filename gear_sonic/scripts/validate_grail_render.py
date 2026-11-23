@@ -7,6 +7,7 @@ Example:
 
 import argparse
 from fractions import Fraction
+from functools import cache
 import json
 from pathlib import Path
 import time
@@ -17,12 +18,13 @@ def validate(traces, renders):
     import numpy as np
 
     from gear_sonic.utils.grail.offline_data import episodes, load_episode
-    from gear_sonic.utils.grail.offline_render import source_fingerprint
+    from gear_sonic.utils.grail.offline_render import digest_file, source_fingerprint
 
     started = time.perf_counter()
     results = []
     env_ids = set()
     total = 0
+    digest = cache(digest_file)
     for path in episodes(traces):
         meta, trace = load_episode(path)
         destination = renders / path.parent.name
@@ -30,7 +32,7 @@ def validate(traces, renders):
         n = meta["transitions"]
         if result["frames"] != n or result["fps"] != 50:
             raise ValueError(f"incorrect completion marker: {path}")
-        if result["source_fingerprint"] != source_fingerprint(path):
+        if result["source_fingerprint"] != source_fingerprint(path, digest=digest):
             raise ValueError(f"changed source: {path}")
         if result["timeline_time"] != 0:
             raise ValueError(f"Isaac timeline advanced: {path}")

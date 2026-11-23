@@ -56,9 +56,6 @@ class PixelStats:
         }
 
 
-_MODELS = {}
-
-
 @lru_cache(maxsize=1)
 def _reference_camera_model():
     import xml.etree.ElementTree as ET
@@ -71,6 +68,7 @@ def _reference_camera_model():
     )
 
 
+@lru_cache(maxsize=1)
 def load_replay_model(path):
     """Apply the current RGB calibration to snapshots with the old stock camera."""
     import mujoco
@@ -97,10 +95,7 @@ def prepare_episode(path):
     started = time.perf_counter()
     path = Path(path)
     meta, trace = load_episode(path)
-    model_path = str((path.parent / meta["model"]).resolve())
-    if model_path not in _MODELS:
-        _MODELS[model_path] = load_replay_model(model_path)
-    model = _MODELS[model_path]
+    model = load_replay_model((path.parent / meta["model"]).resolve())
     data = mujoco.MjData(model)
     n = meta["transitions"]
     fields = ("xpos", "xmat", "geom_xpos", "geom_xmat", "cam_xpos", "cam_xmat")

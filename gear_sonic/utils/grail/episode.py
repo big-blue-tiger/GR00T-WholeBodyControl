@@ -8,7 +8,7 @@ from .observations import rotation
 from .plan import sample_carry_plan, table_outward_normal
 
 
-def reset_scene(model, data, cfg, manifest, initial, rng, planner):
+def reset_scene(model, data, cfg, manifest, initial, rng, planner, *, release_position=None):
     mujoco.mj_resetData(model, data)
     top = rng.uniform(*cfg["table"]["top_height_range"])
     table_pos = np.r_[cfg["table"]["position_xy"], top - 0.02]
@@ -41,7 +41,7 @@ def reset_scene(model, data, cfg, manifest, initial, rng, planner):
         table_pos[:2] + tangent * (samples[1] - 0.5) + normal * (0.25 * samples[2]),
         top - vertices[:, 2].min(),
     ]
-    plan = sample_carry_plan(rest, obj_quat, yaw, normal, rng, planner)
+    plan = sample_carry_plan(rest, obj_quat, yaw, normal, rng, planner, release_position=release_position)
     address = model.jnt_qposadr[model.joint("grail_object_joint").id]
     data.qpos[address:address + 7] = np.r_[
         rest + [0, 0, cfg["object"]["init_z_offset"]], obj_quat

@@ -21,7 +21,7 @@ def prepared_directory(dataset_dir, cache_dir=None):
     if cache_dir is not None:
         return Path(cache_dir).resolve()
     dataset_dir = Path(dataset_dir).resolve()
-    if dataset_dir.name == "1600obj":
+    if dataset_dir.name in ("100obj", "1600obj"):
         return dataset_dir / "object_obj"
     return PREPARED_ASSETS / dataset_dir.name
 

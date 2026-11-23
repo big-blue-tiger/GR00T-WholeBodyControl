@@ -1,5 +1,6 @@
 """Replay saved trajectories in independent Isaac processes and encode aligned videos."""
 
+from functools import cache
 import hashlib
 import json
 import os
@@ -43,7 +44,7 @@ def digest_file(path):
     return digest.hexdigest()
 
 
-def source_fingerprint(path):
+def source_fingerprint(path, *, digest=digest_file):
     path = Path(path)
     meta = json.loads(path.read_text())
     # Labels and task text do not change pixels; dynamics and visual inputs do.
@@ -53,7 +54,7 @@ def source_fingerprint(path):
         ("scene", meta["scene"]),
         ("model", meta["model"]),
     ]:
-        inputs[key] = digest_file(path.parent / filename)
+        inputs[key] = digest((path.parent / filename).resolve())
     return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
 
 
@@ -169,16 +170,20 @@ def render_identity(paths, requested, encode_workers, gpu):
 
     from .render_pipeline import ROBOT_MJCF
 
-    scene_path = paths[0].parent / json.loads(paths[0].read_text())["scene"]
-    source, dependencies, background = scene_assets(scene_path)
-    assets = [
-        source,
+    scene_paths = sorted({
+        (path.parent / json.loads(path.read_text())["scene"]).resolve() for path in paths
+    })
+    scene_root = scene_paths[0].parent
+    assets = {
         Path(__file__).parents[2] / "data/robots/g1/g1_43dof_s3.usda",
         ROBOT_MJCF,
-        *dependencies,
-    ]
-    if background and background.get("enabled"):
-        assets.append(background["asset_path"])
+    }
+    for scene_path in scene_paths:
+        source, dependencies, background = scene_assets(scene_path)
+        assets.update(path.resolve() for path in [source, *dependencies])
+        if background and background.get("enabled"):
+            assets.add(Path(background["asset_path"]).resolve())
+    scene_hashes = {os.path.relpath(p, scene_root): digest_file(p) for p in scene_paths}
     visual_dir = Path(__file__).parents[1] / "mujoco_sim"
     implementation = [
         Path(__file__), Path(__file__).with_name("render_pipeline.py"),
@@ -191,11 +196,11 @@ def render_identity(paths, requested, encode_workers, gpu):
         isaac_versions={name: metadata.version(name)
                         for name in ("isaacsim", "isaacsim-kernel", "isaacsim-replicator")},
         python=sys.prefix,
-        scene=digest_file(scene_path),
+        scene=next(iter(scene_hashes.values())) if len(scene_hashes) == 1 else scene_hashes,
         config=VISUAL_CONFIG,
         requested=requested,
         encode_workers=encode_workers,
-        assets={os.path.relpath(p, scene_path.parent): digest_file(p) for p in assets},
+        assets={os.path.relpath(p, scene_root): digest_file(p) for p in assets},
         implementation={str(p): digest_file(p) for p in implementation},
     )
 
@@ -222,7 +227,8 @@ def render(args):
     fingerprint = config_fingerprint(config)
     atomic_json(output / "render_selection.json",
                 dict(key=config["selection_key"], identity=identity, selected=selected))
-    fingerprints = {str(p): source_fingerprint(p) for p in paths}
+    digest = cache(digest_file)
+    fingerprints = {str(p): source_fingerprint(p, digest=digest) for p in paths}
     pending = pending_episodes(
         paths, output, fingerprints, fingerprint, overwrite=args.overwrite, resume=args.resume
     )
@@ -259,14 +265,14 @@ def render(args):
     ))
 
 
-def render_episodes(visual, job, pool):
+def render_episodes(visual, job, pool, scene_path):
     from collections import deque
     from itertools import islice
     from types import SimpleNamespace
 
     import omni.timeline
 
-    from .render_pipeline import EncoderPool, atomic_json, prepare_episode
+    from .render_pipeline import EncoderPool, atomic_json, load_replay_model, prepare_episode
 
     paths = iter(job["episodes"])
     # Keep the same three-episode lookahead while rendering one camera at a time.
@@ -287,6 +293,13 @@ def render_episodes(visual, job, pool):
             if following is not None:
                 futures.append((following, pool.submit(prepare_episode, following)))
             meta = prepared["meta"]
+            directory = Path(path).parent
+            episode_scene = (directory / meta["scene"]).resolve()
+            if episode_scene != scene_path:
+                source, _, _ = scene_assets(episode_scene)
+                model = load_replay_model((directory / meta["model"]).resolve())
+                visual.scene.set_object(model, source)
+                scene_path = episode_scene
             identifier = meta["episode_index"]
             encoders.send("start", identifier, dict(
                 destination=str(Path(job["output"]) / Path(path).parent.name),
@@ -352,7 +365,7 @@ def run_jobs(job):
         job["startup_s"] = booted - boot_started
         job["scene_load_s"] = time.perf_counter() - booted
         with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as pool:
-            render_episodes(visual, job, pool)
+            render_episodes(visual, job, pool, scene_path)
     finally:
         failed = sys.exc_info()[0] is not None
         if failed:

@@ -45,7 +45,7 @@ bash install_scripts/install_grail.sh
 
 ## 批量准备其他物体
 
-仓库提供默认物体及其预转换文件，大文件由 Git LFS 下载。使用新物体时，把包含 `object_usd/`、贴图和 `bps/` 的数据集放到 `gear_sonic/data/grail/` 下，然后在 `gr00t-sim` 中转换。
+仓库通过 Git LFS 提供 `1600obj` 示例物体及其预转换文件。离线批量采集默认使用本地的 `gear_sonic/data/grail/100obj`，需要包含 `object_usd/`、贴图、`bps/` 和预转换目录 `object_obj/`。使用新物体时，把数据集放到 `gear_sonic/data/grail/` 下，然后在 `gr00t-sim` 中转换。
 
 ```bash
 python -m gear_sonic.scripts.prepare_grail_assets \
@@ -57,6 +57,6 @@ python -m gear_sonic.scripts.prepare_grail_assets \
 | `--dataset-dir` | 原始数据集目录 |
 | `--all` | 转换数据集内所有物体 |
 | `--object-key` | 仅转换指定物体，与 `--all` 互斥 |
-| `--cache-dir` | 覆盖输出目录。`1600obj` 默认写入 `gear_sonic/data/grail/1600obj/object_obj/`，其他数据集默认写入 `gear_sonic/data/grail/prepared_assets/<数据集目录名>/` |
+| `--cache-dir` | 覆盖输出目录。`100obj` 和 `1600obj` 使用数据集内的 `object_obj/`。其余数据集使用 `gear_sonic/data/grail/prepared_assets/<数据集目录名>/` |
 
 分发额外物体时一起提供原始数据集和对应的预转换目录，并保留贴图的相对路径。

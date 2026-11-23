@@ -47,6 +47,7 @@ class GrailRuntime:
             ):
                 raise ValueError(f"Invalid initial pose field {key}")
         self.recovery = self.recovery_future = self.scene_future = None
+        self.scene_data_future = None
         if env.config.get("GRAIL_RECOVERY"):
             from .checkpoints import DEFAULT_CHECKPOINT
             from .recovery import RecoveryInitializer
@@ -240,21 +241,29 @@ class GrailRuntime:
         if self.env.grail_object_cycle and self.scene_future is None:
             self.scene_future = self.reset_executor.submit(self.env.prepare_next_scene)
         if self.phase == "switching_object":
-            if self.scene_future.done():
-                scene = self.scene_future.result()
-                self.scene_future = None
-                if scene is not None:
-                    self.env.replace_scene(*scene)
-                    self.model, self.data = self.env.mj_model, self.env.mj_data
-                    self.cfg, self.manifest = self.env.grail_scene, self.env.grail_manifest
-                    self.observations = Observations(self.model, self.cfg, self.manifest["bps"])
-                    if self.reward_value is not None:
-                        self.reward_value.bind_scene(self.observations)
-                    if self.recovery is not None:
-                        self.recovery = type(self.recovery)(
-                            self.model, self.cfg, self.recovery_checkpoint
-                        )
-                self.start_episode()
+            if not self.scene_future.done():
+                return False
+            scene = self.scene_future.result()
+            if scene is not None:
+                if self.scene_data_future is None:
+                    # Native viewer loading waits for the graphics thread. Keep
+                    # publishing the old, frozen scene's LowState in the meantime.
+                    self.scene_data_future = self.reset_executor.submit(self.env.prepare_scene_data, scene[0])
+                if not self.scene_data_future.done():
+                    return False
+                self.env.replace_scene(*scene, self.scene_data_future.result())
+                self.scene_data_future = None
+                self.model, self.data = self.env.mj_model, self.env.mj_data
+                self.cfg, self.manifest = self.env.grail_scene, self.env.grail_manifest
+                self.observations = Observations(self.model, self.cfg, self.manifest["bps"])
+                if self.reward_value is not None:
+                    self.reward_value.bind_scene(self.observations)
+                if self.recovery is not None:
+                    self.recovery = type(self.recovery)(
+                        self.model, self.cfg, self.recovery_checkpoint
+                    )
+            self.scene_future = None
+            self.start_episode()
             return False
         if self.phase == "preparing":
             if self.recovery_future.done():

@@ -68,20 +68,25 @@ class Decoder:
         self.directory.cleanup()
 
 
-def prepare_scene(args):
+def prepare_scene(args, output, object_key):
     import mujoco
+
+    from .observations import rotation
     from .scene import build_scene
 
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    if list(output.glob("episode_*")):
-        raise FileExistsError(f"collection directory already contains episodes: {output}")
     model, config, manifest = build_scene(
         args.robot_scene.resolve(), args.scene_config.resolve(),
-        args.dataset_dir, args.object_key, args.cache_dir,
+        args.dataset_dir, object_key, args.cache_dir,
     )
-    mujoco.mj_saveModel(model, str(output / "model.mjb"))
     background = config.get("isaac_scene", {})
+    release_position = config.get("offline_release_position_scene")
+    if release_position is not None:
+        release_position = np.asarray(release_position, dtype=float)
+        if release_position.shape != (3,) or not np.isfinite(release_position).all():
+            raise ValueError("offline_release_position_scene requires three finite metre values")
+        release_position = (
+            rotation(background["quaternion_wxyz"]) @ release_position + background["translation"]
+        ).tolist()
     if "asset_path" in background:
         background["asset_path"] = os.path.relpath(background["asset_path"], output)
     manifest["source"] = os.path.relpath(manifest["source"], output)
@@ -95,12 +100,28 @@ def prepare_scene(args):
         initial_pose=os.path.relpath(args.initial_pose, output),
         checkpoint=os.path.relpath(args.checkpoint, output),
         decoder=os.path.relpath(args.decoder_model, output), task=args.task,
-        scene_config=os.path.relpath(args.scene_config, output), object_key=args.object_key,
-        release_override=not args.no_release_override,
+        scene_config=os.path.relpath(args.scene_config, output), object_key=object_key,
+        release_position=release_position, release_override=not args.no_release_override,
         mujoco_version=mujoco.__version__,
     )
+    output.mkdir(parents=True, exist_ok=True)
+    mujoco.mj_saveModel(model, str(output / "model.mjb"))
     (output / "scene.json").write_text(json.dumps(scene, default=json_default, indent=2))
-    return output
+
+
+def collection_objects(dataset_dir, requested, cache_dir):
+    from .assets import prepared_directory, prepared_object_keys
+
+    keys = list(dict.fromkeys(requested or sorted(
+        path.stem for path in (dataset_dir / "object_usd").glob("*.usd") if path.is_file()
+    )))
+    if not keys:
+        raise ValueError(f"no USD objects in {dataset_dir / 'object_usd'}")
+    missing = set(keys).difference(prepared_object_keys(dataset_dir, cache_dir))
+    if missing:
+        cache = prepared_directory(dataset_dir, cache_dir)
+        raise FileNotFoundError(f"Missing USD, BPS or prepared assets in {cache}: {', '.join(sorted(missing))}")
+    return keys
 
 
 def receive(connection):
@@ -112,21 +133,45 @@ def receive(connection):
 
 def collect(args):
     import torch
-    from .policy import GrailActor, GrailPolicy, finger_targets
-    from .checkpoints import resolve_checkpoint
 
-    if args.num_envs < 1 or args.cpu_workers < 1 or args.num_episodes < args.num_envs:
-        raise ValueError("require positive worker/environment counts and num_episodes >= num_envs")
+    from .checkpoints import resolve_checkpoint
+    from .policy import GrailActor, GrailPolicy, finger_targets
+
+    keys = collection_objects(args.dataset_dir, args.object_key, args.cache_dir)
+    episodes_per_object = args.episodes_per_object
+    num_episodes = len(keys) * episodes_per_object
+    if min(args.num_envs, args.cpu_workers, episodes_per_object) < 1 or num_episodes < args.num_envs:
+        raise ValueError("require positive worker/environment counts and total episodes >= num_envs")
     steps = round(args.duration * 50)
     if steps < 1 or abs(steps / 50 - args.duration) > 1e-9:
         raise ValueError("duration must be a positive multiple of 20 ms")
     args.checkpoint = resolve_checkpoint(args.checkpoint)
+    output = args.output.resolve()
+    if any(output.glob("episode_*")):
+        raise FileExistsError(f"collection directory already contains episodes: {output}")
     print(f"[Collect] Checkpoint: {args.checkpoint}", flush=True)
-    output = prepare_scene(args)
+    print(f"[Collect] {len(keys)} objects × {episodes_per_object} episodes = {num_episodes}", flush=True)
     torch.set_num_threads(args.threads)
     policy = GrailPolicy(args.checkpoint, args.device)
     policy(np.zeros((args.num_envs, 5, 161)), np.zeros((args.num_envs, 79)))
     actor = GrailActor(policy, release_override=not args.no_release_override)
+    output.mkdir(parents=True, exist_ok=True)
+    scene_dirs = {key: output / "objects" / key if len(keys) > 1 else output for key in keys}
+    if len(keys) > 1:
+        index = dict(task=args.task, episodes_per_object=episodes_per_object, objects={
+            key: str((directory / "scene.json").relative_to(output)) for key, directory in scene_dirs.items()
+        })
+        (output / "scene.json").write_text(json.dumps(index, indent=2))
+    prepared = set()
+
+    def reset_assignment(env_id, episode):
+        key = keys[episode // episodes_per_object]
+        directory = scene_dirs[key]
+        if key not in prepared:
+            prepare_scene(args, directory, key)
+            prepared.add(key)
+        return env_id, episode, args.seed + episode, str(directory)
+
     ctx = mp.get_context("spawn")
     count = min(args.cpu_workers, args.num_envs)
     connections, processes, env_workers = [], [], {}
@@ -141,13 +186,13 @@ def collect(args):
             ids = list(range(worker, args.num_envs, count))
             env_workers.update({env_id: worker for env_id in ids})
             process = ctx.Process(target=simulation_worker, args=(
-                child, dict(output=str(output), steps=steps), ids,
+                child, dict(output=str(output), steps=steps),
             ))
             process.start()
             child.close()
             connections.append(parent)
             processes.append(process)
-            parent.send(("reset", [(i, i, args.seed + i) for i in ids]))
+            parent.send(("reset", [reset_assignment(i, i) for i in ids]))
         for connection in connections:
             snapshots.extend(receive(connection))
         last_report = time.perf_counter()
@@ -182,9 +227,9 @@ def collect(args):
                 for result in receive(connection):
                     if result.get("done"):
                         completed += 1
-                        print(f"[Collect] {completed}/{args.num_episodes}: {result['episode']}", flush=True)
-                        if next_episode < args.num_episodes:
-                            replacements[worker].append((result["env_id"], next_episode, args.seed + next_episode))
+                        print(f"[Collect] {completed}/{num_episodes}: {result['episode']}", flush=True)
+                        if next_episode < num_episodes:
+                            replacements[worker].append(reset_assignment(result["env_id"], next_episode))
                             next_episode += 1
                     else:
                         snapshots.append(result)
@@ -217,6 +262,7 @@ def collect(args):
         n = completed * steps
         stats = dict(
             num_envs=args.num_envs, cpu_workers=count, episodes=completed, transitions=n,
+            num_objects=len(keys), episodes_per_object=episodes_per_object,
             wall_s=elapsed, physics_steps_per_second=n * 4 / elapsed,
             episodes_per_hour=completed * 3600 / elapsed, timing=timings, workers=workers,
             parent_cpu_s=time.process_time() - cpu_start,

@@ -2,11 +2,11 @@
 
 import json
 from os.path import relpath
+from pathlib import Path
 import pickle
 import resource
 import time
 import traceback
-from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -15,7 +15,6 @@ from .episode import reset_scene
 from .observations import Observations
 from .plan import CarryPlannerConfig
 from .task import CarryTask
-
 
 BODY_NAMES = (
     [f"{s}_{j}_joint" for s in ("left", "right")
@@ -35,11 +34,12 @@ def joint_addresses(model, names):
 
 
 class OfflineEnvironment:
-    def __init__(self, model, scene, initial, env_id, output, steps):
+    def __init__(self, model, scene, initial, env_id, output, steps, scene_dir):
         self.model, self.scene, self.initial = model, scene, initial
         self.data = mujoco.MjData(model)
         self.cfg, self.manifest = scene["config"], scene["manifest"]
         self.env_id, self.output, self.steps = env_id, Path(output), steps
+        self.scene_dir = scene_dir
         self.observations = Observations(model, self.cfg, self.manifest["bps"])
         self.qadr, self.vadr = joint_addresses(model, COMMAND_NAMES)
         joints = [model.joint(name).id for name in COMMAND_NAMES]
@@ -55,6 +55,7 @@ class OfflineEnvironment:
         self.plan, self.reset_details = reset_scene(
             self.model, self.data, self.cfg, self.manifest, self.initial,
             np.random.default_rng(seed), self.planner,
+            release_position=self.scene.get("release_position"),
         )
         self.task = CarryTask(self.plan, self.planner.pickup_settle_s)
         self.observations.reset()
@@ -149,10 +150,12 @@ class OfflineEnvironment:
         metadata = dict(
             episode_index=self.episode, env_id=self.env_id, seed=self.seed, label="unlabeled",
             fps=50, physics_dt=.005, transitions=self.steps, task=self.scene["task"],
-            scene="../scene.json", model="../model.mjb",
-            checkpoint=relpath(self.output / self.scene["checkpoint"], directory),
-            decoder=relpath(self.output / self.scene["decoder"], directory),
-            initial_pose=relpath(self.output / self.scene["initial_pose"], directory),
+            object_key=self.scene["object_key"],
+            scene=relpath(self.scene_dir / "scene.json", directory),
+            model=relpath(self.scene_dir / "model.mjb", directory),
+            checkpoint=relpath(self.scene_dir / self.scene["checkpoint"], directory),
+            decoder=relpath(self.scene_dir / self.scene["decoder"], directory),
+            initial_pose=relpath(self.scene_dir / self.scene["initial_pose"], directory),
             task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
         )
         (directory / "episode.json").write_text(json.dumps(metadata, indent=2))
@@ -161,25 +164,45 @@ class OfflineEnvironment:
         return directory
 
 
-def simulation_worker(connection, options, assignments):
+def load_environment_scene(scene_dir):
+    scene = json.loads((scene_dir / "scene.json").read_text())
+    model = mujoco.MjModel.from_binary_path(str(scene_dir / "model.mjb"))
+    with (scene_dir / scene["initial_pose"]).open("rb") as stream:
+        initial = pickle.load(stream)
+    return model, scene, initial
+
+
+def simulation_worker(connection, options):
     try:
-        output = Path(options["output"])
-        scene = json.loads((output / "scene.json").read_text())
-        model = mujoco.MjModel.from_binary_path(str(output / "model.mjb"))
-        with (output / scene["initial_pose"]).open("rb") as stream:
-            initial = pickle.load(stream)
-        envs = {env_id: OfflineEnvironment(model, scene, initial, env_id, options["output"], options["steps"])
-                for env_id in assignments}
+        envs = {}
         cpu_start = time.process_time()
         while True:
-            operation, payload = connection.recv()
+            try:
+                operation, payload = connection.recv()
+            except EOFError:
+                break
             if operation == "close":
                 totals = {k: sum(env.timing[k] for env in envs.values()) for k in next(iter(envs.values())).timing}
                 connection.send(dict(timing=totals, cpu_s=time.process_time() - cpu_start,
                                      peak_rss_mib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024))
                 break
             if operation == "reset":
-                results = [envs[e].reset(episode, seed) for e, episode, seed in payload]
+                scenes = {env.scene_dir: (env.model, env.scene, env.initial) for env in envs.values()}
+                results = []
+                for env_id, episode, seed, directory in payload:
+                    scene_dir = Path(directory)
+                    previous = envs.get(env_id)
+                    if previous is None or previous.scene_dir != scene_dir:
+                        if scene_dir not in scenes:
+                            scenes[scene_dir] = load_environment_scene(scene_dir)
+                        env = OfflineEnvironment(
+                            *scenes[scene_dir], env_id, options["output"], options["steps"], scene_dir,
+                        )
+                        if previous is not None:
+                            env.timing = previous.timing
+                        envs[env_id] = env
+                    results.append(envs[env_id].reset(episode, seed))
+                scenes.clear()
             else:
                 results = [envs[item["env_id"]].advance(item["reply"], item["expert"], item["action"])
                            for item in payload]

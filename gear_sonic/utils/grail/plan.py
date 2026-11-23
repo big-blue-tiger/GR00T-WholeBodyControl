@@ -107,6 +107,21 @@ def _root_path(initial_yaw, angle, length, config):
     return positions, nturn, walk_end, hold_end
 
 
+def _carry_plan(carry_pos, quat, final_pos, base_goal_xy, angle, length,
+                nturn, walk_end, hold_end):
+    # World-yaw rotation times the original wxyz object orientation.
+    c, s = np.cos(angle / 2), np.sin(angle / 2)
+    w, x, y, z = quat
+    final_quat = np.array([c*w-s*z, c*x-s*y, c*y+s*x, c*z+s*w])
+    sparse = np.zeros((hold_end + 1, 2), dtype=np.float32)
+    sparse[:nturn, 1] = angle
+    return CarryPlan(
+        carry_pos.astype(np.float32), quat.astype(np.float32),
+        final_pos.astype(np.float32), final_quat.astype(np.float32),
+        sparse, base_goal_xy.astype(np.float32), nturn, walk_end, hold_end, angle, length,
+    )
+
+
 def plan_carry_task(object_position, object_quaternion, initial_yaw, final_yaw,
                     lift, lower, distance, config=CarryPlannerConfig()):
     """Build a deterministic arc/straight plan; goals exclude reset height lifts."""
@@ -144,25 +159,55 @@ def plan_carry_task(object_position, object_quaternion, initial_yaw, final_yaw,
     final_pos = carry_pos.copy()
     final_pos[:2] += path[-1] + end_rot @ FINAL_OFFSET - start_rot @ CARRY_OFFSET
     final_pos[2] -= lower
-    # World-yaw rotation times the original wxyz object orientation.
-    c, s = np.cos(angle/2), np.sin(angle/2)
-    w, x, y, z = quat
-    final_quat = np.array([c*w-s*z, c*x-s*y, c*y+s*x, c*z+s*w])
-
     # dx is computed online from this fixed world-frame base endpoint.
     base_goal_xy = pos[:2] - start_rot @ CARRY_OFFSET + path[-1]
-    sparse = np.zeros((len(path), 2), dtype=np.float32)
-    sparse[:nturn, 1] = angle
-    return CarryPlan(
-        carry_pos.astype(np.float32), quat.astype(np.float32),
-        final_pos.astype(np.float32), final_quat.astype(np.float32),
-        sparse, base_goal_xy.astype(np.float32), nturn, walk_end, hold_end, angle, length,
+    return _carry_plan(
+        carry_pos, quat, final_pos, base_goal_xy, angle, length, nturn, walk_end, hold_end,
+    )
+
+
+def plan_carry_to_position(object_position, object_quaternion, initial_yaw, release_position,
+                           lift, config):
+    """Plan an arc and straight walk to a fixed world-frame release position."""
+    carry_pos = np.asarray(object_position, dtype=float) + [0, 0, lift]
+    quat = np.asarray(object_quaternion, dtype=float)
+    quat = quat / np.linalg.norm(quat)
+    final_pos = np.asarray(release_position, dtype=float)
+    start_xy = carry_pos[:2] - rotation_2d(initial_yaw) @ CARRY_OFFSET
+    displacement = final_pos[:2] - start_xy
+    bearing = np.arctan2(displacement[1], displacement[0]) - initial_yaw
+    angle = float(np.arctan2(np.sin(bearing), np.cos(bearing)))
+    # Fit the heading after subtracting the turn's displacement and the
+    # lateral offset of the held object at release. Stay on the initial turn side.
+    for _ in range(8):
+        arc, nturn, _, _ = _root_path(initial_yaw, angle, 1.0, config)
+        delta = displacement - arc[nturn]
+        distance = np.linalg.norm(delta)
+        if distance <= abs(FINAL_OFFSET[1]):
+            raise ValueError("Release position is too close to the pickup for carry planning")
+        error = np.arctan2(delta[1], delta[0]) - initial_yaw - angle
+        error -= np.arcsin(FINAL_OFFSET[1] / distance)
+        angle += float(np.arctan2(np.sin(error), np.cos(error)))
+    arc, nturn, _, _ = _root_path(initial_yaw, angle, 1.0, config)
+    end_rotation = rotation_2d(initial_yaw + angle)
+    base_goal_xy = final_pos[:2] - end_rotation @ FINAL_OFFSET
+    length = float((base_goal_xy - start_xy - arc[nturn]) @ end_rotation[:, 0])
+    if length <= 0:
+        raise ValueError("Planned straight length must be positive")
+    _, nturn, walk_end, hold_end = _root_path(initial_yaw, angle, length, config)
+    return _carry_plan(
+        carry_pos, quat, final_pos, base_goal_xy, angle, length, nturn, walk_end, hold_end,
     )
 
 
 def sample_carry_plan(object_position, object_quaternion, initial_yaw, outward_normal,
-                      rng, config=CarryPlannerConfig()):
-    """Sample an outward goal and take the shortest turn to its heading."""
+                      rng, config=CarryPlannerConfig(), *, release_position=None):
+    """Sample a carry plan using a fixed release point or the outward sector."""
+    if release_position is not None:
+        return plan_carry_to_position(
+            object_position, object_quaternion, initial_yaw, release_position,
+            rng.uniform(*config.lift_range), config,
+        )
     normal_yaw = np.arctan2(outward_normal[1], outward_normal[0])
     sector = np.deg2rad(config.sector_degrees)
     for _ in range(128):

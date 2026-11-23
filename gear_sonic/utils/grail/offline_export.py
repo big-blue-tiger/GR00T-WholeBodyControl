@@ -13,7 +13,9 @@ from .offline_sim import BODY_NAMES, HAND_NAMES, joint_addresses
 def export(args):
     from gear_sonic.data.exporter import Gr00tDataExporter
     from gear_sonic.data.features_sonic_vla import (
-        get_features_sonic_vla, get_g1_robot_model, get_modality_config_sonic_vla,
+        get_features_sonic_vla,
+        get_g1_robot_model,
+        get_modality_config_sonic_vla,
     )
     from gear_sonic.utils.data_collection.transforms import compute_projected_gravity
 
@@ -48,11 +50,15 @@ def export(args):
         save_root=args.output, fps=50, features=features, modality_config=modality,
         task=scene["task"], script_config=scene, robot_type="unitree_g1_sonic", preencoded_videos=True,
     )
-    model = mujoco.MjModel.from_binary_path(str(args.traces / "model.mjb"))
-    qadr, _ = joint_addresses(model, BODY_NAMES + HAND_NAMES)
+    model_path = None
     mapping = []
     for path in selected:
         meta, trace = load_episode(path)
+        episode_model = (path.parent / meta["model"]).resolve()
+        if episode_model != model_path:
+            model = mujoco.MjModel.from_binary_path(str(episode_model))
+            qadr, _ = joint_addresses(model, BODY_NAMES + HAND_NAMES)
+            model_path = episode_model
         n = meta["transitions"]
         rendered = args.renders / path.parent.name
         info = json.loads((rendered / "render.json").read_text())
@@ -85,9 +91,12 @@ def export(args):
             columns, {"observation.images.ego_view": rendered / "ego_view.mp4"},
             {"observation.images.ego_view": info["video_stats"]}, task=meta["task"],
         )
-        mapping.append(dict(episode_index=exporter.meta.total_episodes - 1,
-                            source_episode_index=meta["episode_index"], label=meta["label"],
-                            source=str(path.resolve())))
+        entry = dict(episode_index=exporter.meta.total_episodes - 1,
+                     source_episode_index=meta["episode_index"], label=meta["label"],
+                     source=str(path.resolve()))
+        if "object_key" in meta:
+            entry["object_key"] = meta["object_key"]
+        mapping.append(entry)
     (args.output / "meta" / "source_episodes.json").write_text(json.dumps(mapping, indent=2))
     write_gr00t_stats(args.output)
     print(f"[Export] {len(mapping)} episodes -> {args.output}", flush=True)

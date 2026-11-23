@@ -75,11 +75,21 @@ class GrailEnv(DefaultEnv):
                 print(f"[GRAIL] Skipping object {key}: {exc}", flush=True)
         return None
 
-    def replace_scene(self, model, config, manifest):
+    def prepare_scene_data(self, model):
+        model.opt.timestep = self.sim_dt
+        data = mujoco.MjData(model)
+        if self.viewer is not None:
+            # MuJoCo 3.17's passive Handle has no public model reload method.
+            viewer = self.viewer._get_sim()
+            if viewer is not None:
+                mujoco.mj_forward(model, data)
+                viewer.load(model, data, "")
+        return data
+
+    def replace_scene(self, model, config, manifest, data):
         # Object assets only modify the task body. Robot control indices are
         # identical across the scenes built from the same robot MJCF.
-        model.opt.timestep = self.sim_dt
-        self.mj_model, self.mj_data = model, mujoco.MjData(model)
+        self.mj_model, self.mj_data = model, data
         self.grail_scene, self.grail_manifest = config, manifest
         if self.image_publish_process is not None:
             self.image_publish_process.object_key = manifest["object_key"]
@@ -87,13 +97,11 @@ class GrailEnv(DefaultEnv):
             for renderer in self.renderers.values():
                 renderer.close()
             self.init_renderers()
-        if self.viewer is not None:
-            # MuJoCo 3.17's passive Handle has no public model reload method.
-            # Use its native viewer loader to refresh GL assets in the same window.
-            viewer = self.viewer._get_sim()
-            if viewer is not None:
-                mujoco.mj_forward(model, self.mj_data)
-                viewer.load(model, self.mj_data, "")
+
+    def update_viewer(self):
+        # sync takes the viewer lock and can block until a pending load finishes.
+        if self.grail.scene_data_future is None:
+            super().update_viewer()
 
     def reset(self):
         if hasattr(self, "grail"):
