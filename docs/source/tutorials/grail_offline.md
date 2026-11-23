@@ -1,80 +1,49 @@
-# GRAIL 离线采集与 Isaac 批量渲染
+# GRAIL 离线采集、渲染与导出
 
-在仓库根目录执行，依次采集轨迹、渲染图像、标注并导出 GR00T N1.7 数据集。
-默认权重及同目录的训练配置 `config.yaml` 随仓库提供。更换权重时，将对应训练配置放在 `.pt` 文件同目录下。
+首次按 [GRAIL 环境配置](../getting_started/grail_environment.md)安装。每个启动终端加载同一套[运行环境](../getting_started/grail_environment.md#运行环境)，从仓库根目录执行命令。
 
-## 安装
-
-按 [GRAIL Conda 环境配置](../getting_started/grail_environment.md)拉取 Git LFS 文件并配置 `gr00t-sim`、Isaac Sim 和 TensorRT 环境。离线采集直接读取预转换资产。随后安装离线依赖。
-
-```bash
-conda activate gr00t-sim
-bash install_scripts/install_grail_offline.sh
-```
-
-安装脚本默认使用当前环境的 `python`，可通过环境变量 `PYTHON` 指定解释器。导出需要在该环境中安装与 PyTorch 版本匹配的 torchvision。
-
-## 采集轨迹
+## 1. 采集轨迹
 
 ```bash
 python -m gear_sonic.scripts.grail_offline collect \
   --output outputs/my_grail_run \
-  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
-  --num-envs 100 --num-episodes 200 --cpu-workers 4 \
-  --task "Pick up the object from the table, carry it, and release it."
+  --num-envs 1 --num-episodes 2 --cpu-workers 1
 ```
 
 | 参数 | 说明 |
 |---|---|
-| `--output` | 轨迹输出目录，必填 |
-| `--num-envs` | 并行环境数，默认 `1` |
-| `--num-episodes` | 总轨迹数，默认 `max(2, num_envs)` |
+| `--output` | 轨迹输出目录，须为新目录或没有已采集轨迹的目录 |
+| `--num-envs` / `--num-episodes` | 并行环境数和总轨迹数，默认 `1` 和 `max(2, num_envs)`。总轨迹数须至少等于并行环境数 |
 | `--cpu-workers` | CPU 仿真进程数，默认 `4` |
-| `--duration` | 每条轨迹的仿真时长（秒），默认 `25` |
-| `--seed` | 随机种子，默认 `42` |
-| `--device` / `--threads` | 顶层策略推理设备与 PyTorch 线程数，默认 `cuda:0` / `1` |
+| `--duration` / `--seed` | 每条轨迹的时长（秒）和随机种子，默认 `25` 和 `42` |
+| `--device` / `--threads` | 顶层策略推理设备和 PyTorch 线程数，默认 `cuda:0` 和 `1` |
 | `--task` | 导出数据集使用的任务描述 |
-| `--checkpoint` | 策略权重文件或目录，默认使用示例中的 `last.pt`。传入目录时按修改时间选择最新完整 `.pt` |
-| `--initial-pose` | 机器人初始姿态文件 |
-| `--dataset-dir` / `--object-key` | GRAIL 资产目录与物体标识，默认物体为 `pickup_table__soap_dispenser_0__001` |
-| `--scene-config` | 默认 `gear_sonic/config/grail/apple_2.yaml`，使用拟合桌面碰撞；渲染使用 `scene_combined_3dgs.usda` 及同目录的 `splats.nurec` |
-| `--cache-dir` | 覆盖预转换目录，默认按 `--dataset-dir` 的目录名从 `gear_sonic/data/grail/prepared_assets/` 读取 |
-| `--no-release-override` | 同时关闭强制张开双手和松手后的 latent 锁定 |
+| `--checkpoint` | 覆盖默认权重，可传入 `.pt` 文件或目录。自定义权重须支持 884 维输入，并与其 `config.yaml` 同目录 |
+| `--dataset-dir` / `--object-key` | 原始资产目录与物体标识。默认使用仓库随附的洗手液 |
+| `--cache-dir` | 覆盖预转换目录，默认按 `--dataset-dir` 的目录名查找 |
+| `--initial-pose` / `--scene-config` | 初始姿态和场景配置 |
+| `--no-release-override` | 关闭强制松手和松手后的 latent 锁定 |
 
-采集与实时入口共用同一默认场景。物体沿用原来的 XY 采样范围，在 `0.76935 m` 高的桌面上初始化。渲染读取采集时记录的 `scene.json`，以该文件所在目录解析物体和场景路径。迁移轨迹时需保留轨迹与资产之间的相对目录布局。
+切换物体前先取得[原始资产和预转换结果](../getting_started/grail_environment.md#批量准备其他物体)。跨机器移动轨迹用于渲染时，保留轨迹与资产之间的相对目录布局。
 
-采集与实时入口共用新版 GRAIL 的观测及 reference-free sparse command，完整逐项定义见 [观测对齐说明](grail_carry.md#新版-grail-观测与-sparse-command)。仅支持 `805 + 79 = 884` 维 checkpoint：`policy_proprio` 保存 `[N,5,161]`，`policy_task` 保存 `[N,79]`；旧的桌角、8 维接触力和 `drop_button` 不再作为策略输入。`scene.json` 记录实际选中的权重文件。
-
-拾取稳定 3 拍并等待 2 秒后开始播放；每拍按当前 pelvis 到固定 base 目标的 XY 距离计算 `dx`，上限 `0.15 m`，转弯帧内 `dyaw` 取规划的完整转角。阶段切换、接触门控与实时入口相同。
-
-松手逻辑也与实时入口一致。收到 `release_requested` 后，该环境锁定上一拍的 latent 和 FSQ token，持续张开双手，并暂停该环境的顶层策略推理，直至下一轮复位。decoder 继续按每拍的本体状态生成关节目标。`release_requested` 和实际使用的动作写入轨迹。
-
-默认资产目录为 `gear_sonic/data/grail/pickup_table_slowturn_300`。用 `--dataset-dir gear_sonic/data/grail/1600obj --object-key pickup_table__apple_13__001` 可选择配套资产中的苹果。目录布局见[批量准备其他物体](../getting_started/grail_environment.md#批量准备其他物体)。采集不读取机器人参考 motion。
-
-## 渲染图像
+## 2. 渲染图像
 
 ```bash
 python -m gear_sonic.scripts.grail_offline render \
   --traces outputs/my_grail_run --output outputs/my_grail_render \
-  --render-envs 3 --encode-workers 4
+  --render-envs 1 --encode-workers 4
 ```
 
 | 参数 | 说明 |
 |---|---|
-| `--traces` | 已采集的轨迹目录，必填 |
-| `--output` | 渲染输出目录，必填 |
-| `--render-envs` | 独立 Isaac 渲染进程的并发上限，正整数，默认 `1` |
-| `--encode-workers` | 视频编码进程数，默认 `4` |
-| `--resume` | 续跑：跳过源轨迹和配置匹配的完整结果，重新生成其余结果 |
+| `--traces` / `--output` | 轨迹目录和渲染输出目录。每条轨迹生成 `ego_view.mp4` |
+| `--render-envs` / `--encode-workers` | Isaac 渲染进程并发上限和视频编码进程数，默认 `1` 和 `4` |
+| `--resume` | 跳过轨迹和配置匹配的完整结果，继续渲染其余轨迹 |
 | `--overwrite` | 覆盖已有渲染结果，与 `--resume` 互斥 |
 
-第一人称 RGB 视频使用与实时推理相同的 D435i 模拟配置。新采集把相机参数保存到 `model.mjb`。用旧默认相机采集的轨迹可以直接重渲染，旧视频可用 `--resume` 或 `--overwrite` 更新。[实时推理教程](grail_carry.md)
+## 3. 标注与导出
 
-输出为 640×480、50 FPS 的 `ego_view.mp4`。视频逐帧对应 50 Hz 的策略轨迹，实际渲染不限速。采集环境数与渲染并发数独立设置。
-
-Isaac 视频省略 MuJoCo 中的目标和质心指示球。已有视频可用 `--resume` 重新渲染。
-
-## 标注与导出
+检查视频后，将符合任务要求的轨迹标为 `success`。下面以第 0 条为例。
 
 ```bash
 python -m gear_sonic.scripts.grail_offline label \
@@ -87,11 +56,10 @@ python -m gear_sonic.scripts.grail_offline export \
 
 | 参数 | 说明 |
 |---|---|
-| `label --episode` | 要标注的轨迹编号，从 `0` 开始 |
-| `label --label` | `success`、`failure` 或 `unlabeled` |
-| `export --traces` / `--renders` | 轨迹目录与对应的渲染目录，必填 |
-| `export --output` | 数据集输出目录，必须为新目录 |
-| `export --labels` | 默认仅导出 `success`；可用逗号分隔多个标签，`all` 包含未标注轨迹 |
+| `label --episode` / `--label` | 从 `0` 开始的轨迹编号，标签可选 `success`、`failure` 或 `unlabeled` |
+| `export --traces` / `--renders` | 轨迹目录和对应的渲染目录 |
+| `export --output` | GR00T N1.7 数据集输出目录，须为新目录 |
+| `export --labels` | 默认导出 `success`。可用逗号分隔标签，或用 `all` 导出全部轨迹 |
 
 ## 校验渲染结果
 
@@ -101,27 +69,18 @@ python -m gear_sonic.scripts.validate_grail_render \
   --report outputs/my_grail_render/validation.json
 ```
 
-`--traces` 和 `--renders` 指定待核对的轨迹与视频目录，`--report` 指定检查报告路径。检查包括视频帧数、分辨率、时间戳及轨迹对齐。
+`--traces` 和 `--renders` 指定核对目录，`--report` 指定报告路径。
 
 ## 测速
-
-采集测速，参数与 `collect` 相同，也会保存轨迹：
 
 ```bash
 python -m gear_sonic.scripts.grail_offline benchmark \
   --output outputs/my_grail_benchmark \
-  --checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   --num-envs 3 --num-episodes 3 --cpu-workers 3
-```
 
-渲染测速，使用前 3 条轨迹、3 个独立 Isaac 进程：
-
-```bash
 python -m gear_sonic.scripts.benchmark_grail_render \
   --traces outputs/my_grail_benchmark --output outputs/my_grail_render_benchmark \
   --episodes 3 --trials 1 --render-envs 3 --encode-workers 4
 ```
 
-`--episodes` 指定每轮使用的前 N 条轨迹，默认 `100`；`--trials` 指定重复轮数，默认 `3`；其余参数与 `render` 相同。`--output` 必须为新目录。
-
-`benchmark.json` 记录各轮和中位吞吐：`median_rendering_fps` 包含 Isaac 启动和退出开销，`median_pipeline_fps` 统计启动后的渲染、读回和编码流水线。结果为所有渲染进程的聚合帧率；每轮视频位于 `trial_00/episode_*/ego_view.mp4`，后续轮次依次编号。
+采集测速使用 `collect` 的参数。渲染测速中，`--episodes` 指定每轮使用的轨迹数，`--trials` 指定重复次数，其他参数与 `render` 相同。使用新输出目录。

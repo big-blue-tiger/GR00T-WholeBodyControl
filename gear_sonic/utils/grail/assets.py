@@ -1,4 +1,4 @@
-"""RoboCasa USD conversion. Run preparation with usd-core; runtime needs no USD.
+"""RoboCasa USD conversion and loading of prepared MuJoCo assets.
 
 Meshes are baked into the USD default-prim parent's coordinate system, exactly
 the frame to which Isaac's rigid root pose is applied. The current bottle uses

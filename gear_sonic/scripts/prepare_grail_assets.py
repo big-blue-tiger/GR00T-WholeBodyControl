@@ -1,6 +1,7 @@
-"""Prepare the selected RoboCasa USD using usd-core, NumPy and trimesh only."""
+"""Preconvert RoboCasa USD assets in the GRAIL simulation environment."""
 
 import argparse
+from importlib.util import find_spec
 from pathlib import Path
 import sys
 
@@ -15,6 +16,15 @@ def main():
     selection.add_argument("--all", action="store_true", help="convert every USD in object_usd/")
     parser.add_argument("--cache-dir", type=Path, help="override the prepared asset directory")
     args = parser.parse_args()
+    # Only the converter sees this wheel. Isaac workers load their own pxr bindings.
+    usd_dir = Path(sys.prefix) / "share/grail-usd"
+    if (usd_dir / "pxr" / "__init__.py").is_file():
+        sys.path.insert(0, str(usd_dir))
+    elif find_spec("pxr") is None:
+        parser.error(
+            "In gr00t-sim, run bash install_scripts/install_grail.sh "
+            "to install the conversion bindings."
+        )
     if not args.all:
         print(prepare_assets(args.dataset_dir, args.object_key, args.cache_dir))
         return

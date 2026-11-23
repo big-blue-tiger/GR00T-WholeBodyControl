@@ -1,0 +1,41 @@
+# Install with install_grail.sh, which applies the package-specific pip options.
+isaacsim[all,extscache]==5.0.0.0
+usd-core==26.5
+lerobot @ git+https://github.com/huggingface/lerobot.git@a445d9c9da6bea99a8972daa4fe1fdd053d711d2
+
+# Simulation and asset conversion
+numpy==1.26.0
+mujoco==3.17.0
+trimesh==4.5.1
+websockets==17.4
+pin==2.7.0
+hpp-fcl==2.4.4
+cmeel-urdfdom==3.1.1.1
+tyro==0.9.13
+typeguard==4.4.2
+typing_extensions==4.12.2
+pyzmq==27.2.0
+msgpack==1.2.4
+msgpack-numpy==0.4.8
+opencv-python==4.11.0.86
+easydict==1.13
+joblib==1.6.0
+loguru==0.7.3
+tqdm==4.70.1
+rich-click==1.9.9
+wheel==0.45.1
+
+# Offline rendering and GR00T N1.7 export
+pandas==2.2.3
+pyarrow==19.0.1
+datasets==3.6.0
+av==14.2.0
+draccus==0.10.0
+jsonlines==4.0.0
+torchcodec==0.3.0
+transformers==4.57.3
+huggingface-hub==0.36.0
+packaging==23.0
+click==8.1.7
+idna==3.10
+psutil==5.9.8
