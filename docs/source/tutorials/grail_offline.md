@@ -68,7 +68,7 @@ python -m gear_sonic.scripts.grail_offline label \
 
 python -m gear_sonic.scripts.grail_offline export \
   --traces outputs/throw_trash_into_bin --renders outputs/throw_trash_into_bin_render \
-  --output outputs/my_grail_dataset --labels success
+  --output outputs/throw_trash_into_bin_dataset --labels success
 ```
 
 | 参数 | 说明 |
@@ -78,12 +78,24 @@ python -m gear_sonic.scripts.grail_offline export \
 | `export --output` | GR00T N1.7 数据集输出目录，须为新目录 |
 | `export --labels` | 默认导出 `success`。可用逗号分隔标签，或用 `all` 导出全部轨迹 |
 
+## 导出 GR00T 在线回合
+
+[GR00T 红桶任务](grail_carry.md#gr00t-红桶任务)在运行中保存每个控制步的 Isaac 第一人称画面与实际执行的动作。每次运行目录中的 `traces/` 含状态、动作和回合标签，`renders/` 含 50 fps MP4 和帧索引，`dataset/` 自动将完整的成功和失败回合导出为 LeRobot v2.1。每条动作对应一帧与一个状态转移，25 秒完整回合有 1,250 条动作和 1,251 个状态边界。
+
+将 `RUN_DIR` 指向本次运行目录，即可从已有轨迹和视频重新导出。例如，将成功回合写入新的目录。
+
+```bash
+python -m gear_sonic.scripts.grail_offline export \
+  --traces "$RUN_DIR/traces" --renders "$RUN_DIR/renders" \
+  --output "$RUN_DIR/dataset_success" --labels success
+```
+
 ## 校验渲染结果
 
 ```bash
 python -m gear_sonic.scripts.validate_grail_render \
-  --traces outputs/my_grail_run --renders outputs/my_grail_render \
-  --report outputs/my_grail_render/validation.json
+  --traces outputs/throw_trash_into_bin --renders outputs/throw_trash_into_bin_render \
+  --report outputs/throw_trash_into_bin_render/validation.json
 ```
 
 `--traces` 和 `--renders` 指定核对目录，`--report` 指定报告路径。
@@ -103,3 +115,15 @@ python -m gear_sonic.scripts.benchmark_grail_render \
 ```
 
 采集测速使用 `collect` 的参数。渲染测速中，`--episodes` 指定每轮使用的轨迹数，`--trials` 指定重复次数，其他参数与 `render` 相同。使用新输出目录。
+
+
+```bash
+rsync -avhP --no-owner --no-group -e 'ssh -p 9980' \
+  --include='/gear_sonic_deploy/policy/***' \
+  --exclude={'/.git/','/.agents/','/.codex/','/.aws/','/.venv*/','.env','/outputs/'} \
+  --exclude={'__pycache__/','*.py[cod]','.cache/','.pytest_cache/','.mypy_cache/','.ruff_cache/','*.log'} \
+  --exclude={'/gear_sonic_deploy/target/','/gear_sonic_deploy/build*/'} \
+  --exclude='/gear_sonic/data/grail/1600obj/' \
+  /home/tide/robot/GR00T-WholeBodyControl/ \
+  yuguanchao@zz.irmv.top:/home/yuguanchao/data0/GR00T-WholeBodyControl/
+```

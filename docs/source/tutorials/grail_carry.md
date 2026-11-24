@@ -28,6 +28,55 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 
 自定义权重须支持 884 维输入，并与其 `config.yaml` 放在同一目录。切换物体前先取得[原始资产和预转换结果](../getting_started/grail_environment.md#批量准备其他物体)。
 
+## GR00T 红桶任务
+
+使用服务器上的 `yuguanchao_gr00t_sim1` 时，按 [服务器启动与本地监视](gr00t_simulation.md) 操作。
+
+先在 `gr00t-n17` 中[启动 GR00T 服务](gr00t_simulation.md#1-启动-gr00t-推理)。看到 `Server ready` 后，在同一容器的另一个终端从仓库根目录启动仿真。
+
+```bash
+conda activate gr00t-sim
+POLICY_BACKEND=gr00t bash gear_sonic/scripts/run_grail_carry.sh --cycle-objects
+```
+
+`--cycle-objects` 按字典序轮换 `100obj` 中已准备的物体，每回合换一个，末尾回到开头，直到按 **Ctrl+C**。可为至少两个物体分别传入 `--object-key`，按指定顺序轮换。每回合默认运行 25 秒仿真时间，可用 `--duration` 调整。有限采集时省略 `--cycle-objects`，默认跑 `pickup_table__alcohol_10__001` 一回合，可用 `--episodes-per-object` 设置每个物体的回合数。初始姿态、转身描述和红桶目标沿用[离线采集](grail_offline.md#1-采集轨迹)。MuJoCo 只推进物理，Isaac 在 headless 模式渲染单路 `ego_view`。启动脚本管理 SONIC decoder。
+
+| 环境变量 | 说明 |
+|---|---|
+| `GR00T_REPO` | Isaac-GR00T 仓库，默认 `../Isaac-GR00T` |
+| `MODEL_DIR` | 用于记录推理权重路径，应与手动启动的服务一致。默认是 GR00T 仓库下的 `outputs/throw_trash_into_bin_n17_fullpass` |
+| `SIM_PYTHON` | 仿真解释器，默认使用当前环境的 `python` |
+| `OUTPUT_DIR` | 新输出目录，默认 `outputs/gr00t_rollouts/<启动时间>-<PID>` |
+
+| 通道 | 数据 |
+|---|---|
+| 容器回环 `127.0.0.1:5550` | ZMQ `REQ/REP` 发送原始 RGB、同帧状态和任务文本，在同一请求中返回 40 步动作块。用 `GR00T_PORT` 改端口 |
+| 容器内 `decoder.sock` | 每 20 ms 仿真时间送出当前动作，由 SONIC 返回当前步的控制指令 |
+| 容器 `5555` | ZMQ `PUB/SUB` 发布录像编码产生的 H.264 包。用 `--preview-port` 改端口 |
+
+Isaac 对每个控制步取帧一次。GR00T 异步推理，控制循环按当前步与观测步的差值从动作块取动作。动作耗尽后最多保持末动作 10 步，再冻结仿真并复用当前画面请求动作。视频按仿真时间保存为 50 fps，同一份编码包也用于预览。实际仿真速度取决于每个控制步的渲染和执行耗时。
+
+### 通过 SSH 查看
+
+在本地解析 Docker bridge 地址并建立隧道。将 `TARGET`、SSH 端口和容器名替换为部署环境中的值。
+
+```bash
+TARGET=user@server
+CONTAINER_IP=$(ssh -p 9980 "$TARGET" \
+  "docker inspect -f '{{(index .NetworkSettings.Networks \"bridge\").IPAddress}}' yuguanchao_gr00t_sim1")
+test -n "$CONTAINER_IP" && ssh -p 9980 -N -o ExitOnForwardFailure=yes \
+  -L "127.0.0.1:15555:$CONTAINER_IP:5555" "$TARGET"
+```
+
+另开本地终端，从仓库根目录运行查看器。H.264 模式需要 PyAV 和带窗口支持的 OpenCV。
+
+```bash
+python -m gear_sonic.scripts.run_camera_viewer \
+  --h264 --camera-host 127.0.0.1 --camera-port 15555
+```
+
+**Q** 关闭本地查看器。启动终端按 **Ctrl+C** 结束采集，已完成的回合会自动导出到本次运行目录的 `dataset/`。[输出和手动导出](grail_offline.md#导出-gr00t-在线回合)
+
 ## 抓握失败恢复测试
 
 ```bash

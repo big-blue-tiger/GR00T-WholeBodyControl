@@ -89,7 +89,7 @@ class Observations:
                 table_force += force
         return forces, table_force
 
-    def proprio(self, data):
+    def root_velocity(self, data):
         rot = data.xmat[self.pelvis].reshape(3, 3)
         velocity = np.empty(6)
         # mjOBJ_BODY's local axes are its inertial frame, which need not equal
@@ -98,13 +98,18 @@ class Observations:
         mujoco.mj_objectVelocity(
             self.model, data, mujoco.mjtObj.mjOBJ_BODY, self.pelvis, velocity, 0
         )
+        return rot.T @ velocity[:3], rot.T @ velocity[3:]
+
+    def proprio(self, data):
+        rot = data.xmat[self.pelvis].reshape(3, 3)
+        angular, linear = self.root_velocity(data)
         frame = np.concatenate(
             (
                 data.qpos[self.qadr] - self.defaults,
                 data.qvel[self.vadr],
                 rot.T @ np.array([0.0, 0.0, -1.0]),
-                rot.T @ velocity[:3],
-                rot.T @ velocity[3:],
+                angular,
+                linear,
                 self.last_action,
             )
         ).astype(np.float32)

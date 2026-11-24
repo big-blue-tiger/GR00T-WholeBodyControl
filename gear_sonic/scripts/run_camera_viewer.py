@@ -31,8 +31,6 @@ import cv2
 import numpy as np
 import tyro
 
-from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
-
 
 @dataclass
 class CameraViewerConfig:
@@ -56,8 +54,64 @@ class CameraViewerConfig:
     max_display_width: int = 640
     """Max width per camera tile in the display window."""
 
+    h264: bool = False
+    """View the GR00T rollout H.264 preview. The server saves the episode videos."""
+
+
+def view_h264(config: CameraViewerConfig):
+    import msgpack
+    import zmq
+
+    title = "GR00T ego_view"
+    # Initialize Qt before PyAV loads its bundled XCB libraries.
+    cv2.namedWindow(title)
+    try:
+        import av
+
+        print("Waiting for a GR00T preview keyframe. Press Q to quit.")
+        with zmq.Context() as context, context.socket(zmq.SUB) as subscriber:
+            subscriber.linger = 0
+            subscriber.rcvhwm = 8
+            subscriber.subscribe(b"")
+            subscriber.connect(f"tcp://{config.camera_host}:{config.camera_port}")
+            decoder, expected = None, None
+            while True:
+                latest = None
+                for index in range(8):
+                    if not subscriber.poll(10 if index == 0 else 0):
+                        break
+                    message = msgpack.unpackb(subscriber.recv(), raw=False)
+                    episode_id, step = message["episode_id"], message["step"]
+                    if (episode_id, step) != expected:
+                        decoder = None
+                    expected = (episode_id, step + 1)
+                    if decoder is None and message["keyframe"]:
+                        decoder = av.CodecContext.create("h264", "r")
+                        decoder.thread_count = 1
+                    if decoder is not None:
+                        frames = decoder.decode(av.Packet(message["h264"]))
+                        if frames:
+                            latest = frames[-1]
+                if latest is not None:
+                    image = latest.to_ndarray(format="bgr24")
+                    if image.shape[1] > config.max_display_width:
+                        scale = config.max_display_width / image.shape[1]
+                        size = (config.max_display_width, int(scale * image.shape[0]))
+                        image = cv2.resize(image, size)
+                    cv2.imshow(title, image)
+                if (cv2.waitKey(1) & 0xFF) in (ord("q"), ord("Q")):
+                    break
+    finally:
+        cv2.destroyAllWindows()
+
 
 def main(config: CameraViewerConfig):
+    if config.h264:
+        view_h264(config)
+        return
+
+    from gear_sonic.camera.composed_camera import ComposedCameraClientSensor
+
     client = ComposedCameraClientSensor(server_ip=config.camera_host, port=config.camera_port)
 
     print("Waiting for first camera frame...")

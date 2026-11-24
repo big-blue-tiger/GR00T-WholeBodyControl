@@ -1,9 +1,45 @@
 #!/usr/bin/env bash
-# Launch the five terminals from docs/source/tutorials/grail_carry.md.
+# Launch GRAIL or a headless GR00T rollout from docs/source/tutorials/grail_carry.md.
 set -eo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$ROOT"
+
+if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
+  SIM_PYTHON=${SIM_PYTHON:-$(command -v python)}
+  GR00T_REPO=${GR00T_REPO:-"$ROOT/../Isaac-GR00T"}
+  MODEL_DIR=${MODEL_DIR:-"$GR00T_REPO/outputs/throw_trash_into_bin_n17_fullpass"}
+  GR00T_PORT=${GR00T_PORT:-5550}
+
+  if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+    exec "$SIM_PYTHON" -m gear_sonic.scripts.run_gr00t_rollout --help
+  fi
+
+  output=${OUTPUT_DIR:-"outputs/gr00t_rollouts/$(date +%Y%m%d_%H%M%S)-$$"}
+  mkdir -p -- "$(dirname -- "$output")"
+  mkdir -- "$output"
+  printf 'Starting simulation with GR00T at 127.0.0.1:%s. Output %s\n' "$GR00T_PORT" "$output"
+
+  object_args=()
+  cache_args=()
+  if [[ -n ${OBJECT_KEY:-} ]]; then
+    object_args=(--object-key "$OBJECT_KEY")
+  fi
+  if [[ -n ${GRAIL_CACHE_DIR:-} ]]; then
+    cache_args=(--cache-dir "$GRAIL_CACHE_DIR")
+  fi
+  status=0
+  "$SIM_PYTHON" -u -m gear_sonic.scripts.run_gr00t_rollout \
+    --dataset-dir "${DATASET_DIR:-gear_sonic/data/grail/100obj}" \
+    --initial-pose "${INITIAL_POSE:-gear_sonic/config/grail/carry_initial_pose.json}" \
+    --seed "${GRAIL_SEED:-42}" "${object_args[@]}" "${cache_args[@]}" \
+    "$@" --output "$output" --model-dir "$MODEL_DIR" --port "$GR00T_PORT" || status=$?
+  if compgen -G "$output/traces/episode_*/episode.json" >/dev/null; then
+    "$SIM_PYTHON" -u -m gear_sonic.scripts.grail_offline export \
+      --traces "$output/traces" --renders "$output/renders" --output "$output/dataset" --labels all
+  fi
+  exit "$status"
+fi
 
 OBJECT_KEY=${OBJECT_KEY:-pickup_table__soap_dispenser_0__001}
 DEVICE=${DEVICE:-cpu}

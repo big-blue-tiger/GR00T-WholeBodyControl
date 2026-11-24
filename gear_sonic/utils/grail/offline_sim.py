@@ -52,7 +52,7 @@ class OfflineEnvironment:
         self.timing = dict(physics_s=0., mj_step_s=0., pd_s=0., task_contact_s=0.,
                            observation_s=0., forward_s=0., write_s=0.)
 
-    def reset(self, episode, seed):
+    def start_episode(self, episode, seed):
         self.episode, self.seed, self.step_index = episode, seed, 0
         self.plan, self.reset_details = reset_scene(
             self.model, self.data, self.cfg, self.manifest, self.initial,
@@ -60,6 +60,9 @@ class OfflineEnvironment:
             release_position=self.scene.get("release_position"),
         )
         self.task = CarryTask(self.plan, self.planner.pickup_settle_s)
+        self.task_description = describe_task(
+            self.scene["task"], self.scene["object_key"], self.plan.sparse[0, 1]
+        )
         self.observations.reset()
         n = self.steps
         self.trace = {
@@ -68,52 +71,73 @@ class OfflineEnvironment:
             "mocap_pos": np.empty((n + 1, self.model.nmocap, 3)),
             "mocap_quat": np.empty((n + 1, self.model.nmocap, 4)),
             "sim_time": np.arange(n + 1, dtype=np.float64) / 50,
+            "action": np.empty((n, 78), dtype=np.float32),
+        }
+        self.snapshot()
+
+    def reset(self, episode, seed):
+        self.start_episode(episode, seed)
+        n = self.steps
+        self.trace.update({
             "policy_proprio": np.empty((n, 5, 161), dtype=np.float32),
             "policy_task": np.empty((n, 79), dtype=np.float32),
             "release_requested": np.empty(n, dtype=bool),
             "expert_action": np.empty((n, 66), dtype=np.float32),
-            "action": np.empty((n, 78), dtype=np.float32),
             "decoder_observation": np.empty((n, 994), dtype=np.float32),
             "decoder_action": np.empty((n, 29), dtype=np.float32),
             **{f"command_{key}": np.empty((n, 43), dtype=np.float32)
                for key in ("q", "dq", "kp", "kd", "tau")},
-        }
-        self.snapshot()
+        })
         return self.observe()
 
     def snapshot(self):
         for key in ("qpos", "qvel", "mocap_pos", "mocap_quat"):
             self.trace[key][self.step_index] = getattr(self.data, key)
 
+    def decoder_request(self, angular=None):
+        if angular is None:
+            angular, _ = self.observations.root_velocity(self.data)
+            angular = angular.astype(np.float32)
+        return dict(
+            env_id=self.env_id, episode_id=self.episode, step=self.step_index,
+            q=self.data.qpos[self.qadr[:29]].tolist(),
+            dq=self.data.qvel[self.vadr[:29]].tolist(),
+            quat=self.data.xquat[self.observations.pelvis].tolist(),
+            angular=angular.tolist(), hand_q=self.data.qpos[self.qadr[29:]].tolist(),
+        )
+
     def observe(self):
         start = time.perf_counter()
         proprio = self.observations.proprio(self.data)
         task = self.observations.privileged(self.data, self.task)
         self.current_observation = proprio, task
-        request = dict(
-            env_id=self.env_id, episode_id=self.episode, step=self.step_index,
-            q=self.data.qpos[self.qadr[:29]].tolist(),
-            dq=self.data.qvel[self.vadr[:29]].tolist(),
-            quat=self.data.xquat[self.model.body("pelvis").id].tolist(),
-            angular=proprio[-1, 89:92].tolist(), hand_q=self.data.qpos[self.qadr[29:]].tolist(),
-        )
+        request = self.decoder_request(proprio[-1, 89:92])
         self.timing["observation_s"] += time.perf_counter() - start
         return dict(env_id=self.env_id, episode_id=self.episode, proprio=proprio, task=task, request=request,
                     release_requested=bool(self.task.release_requested))
 
     def advance(self, reply, expert, action):
+        self.step(reply, action, expert=expert)
+        if self.step_index == self.steps:
+            path = self.save()
+            return dict(env_id=self.env_id, done=True, episode=str(path))
+        return self.observe()
+
+    def step(self, reply, action, *, expert=None):
         i = self.step_index
         if (reply["env_id"], reply["episode_id"], reply["step"]) != (self.env_id, self.episode, i):
             raise ValueError("decoder reply does not match environment control boundary")
-        self.trace["policy_proprio"][i], self.trace["policy_task"][i] = self.current_observation
-        self.trace["release_requested"][i] = self.task.release_requested
-        self.trace["expert_action"][i], self.trace["action"][i] = expert, action
-        self.trace["decoder_observation"][i] = reply["observation"]
-        self.trace["decoder_action"][i] = reply["raw_action"]
+        self.trace["action"][i] = action
         command = {key: np.asarray(reply[key]) for key in ("q", "dq", "kp", "kd", "tau")}
-        for key, values in command.items():
-            self.trace[f"command_{key}"][i] = values
-        self.observations.last_action[:] = expert
+        if expert is not None:
+            self.trace["policy_proprio"][i], self.trace["policy_task"][i] = self.current_observation
+            self.trace["release_requested"][i] = self.task.release_requested
+            self.trace["expert_action"][i] = expert
+            self.trace["decoder_observation"][i] = reply["observation"]
+            self.trace["decoder_action"][i] = reply["raw_action"]
+            for key, values in command.items():
+                self.trace[f"command_{key}"][i] = values
+            self.observations.last_action[:] = expert
         start = time.perf_counter()
         for _ in range(4):
             substep = time.perf_counter()
@@ -139,22 +163,16 @@ class OfflineEnvironment:
         self.task.update(self.step_index, forces.sum(), table)
         self.timing["task_contact_s"] += time.perf_counter() - start
         self.snapshot()
-        if self.step_index == self.steps:
-            path = self.save()
-            return dict(env_id=self.env_id, done=True, episode=str(path))
-        return self.observe()
 
     def save(self):
         start = time.perf_counter()
         result = distance_label(self.trace["qpos"][:, self.object_position_columns], self.plan.final_position)
-        turn_command = self.plan.sparse[0, 1]  # Signed yaw in the generated turn command.
-        task = describe_task(self.scene["task"], self.scene["object_key"], turn_command)
         directory = self.output / f"episode_{self.episode:06d}"
         directory.mkdir()  # Existing episodes must be explicitly removed before recollecting.
         np.savez_compressed(directory / "trace.npz", **self.trace)
         metadata = dict(
             episode_index=self.episode, env_id=self.env_id, seed=self.seed,
-            fps=50, physics_dt=.005, transitions=self.steps, task=task,
+            fps=50, physics_dt=.005, transitions=self.steps, task=self.task_description,
             object_key=self.scene["object_key"],
             scene=relpath(self.scene_dir / "scene.json", directory),
             model=relpath(self.scene_dir / "model.mjb", directory),
