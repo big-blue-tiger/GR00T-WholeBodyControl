@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from gear_sonic.utils.grail.checkpoints import DEFAULT_CHECKPOINT
+from gear_sonic.utils.grail.offline_task import DEFAULT_TASK_TEMPLATE
 
 ROOT = Path(__file__).resolve().parents[2]
 GRAIL_ASSETS = ROOT / "gear_sonic/data/grail"
@@ -43,7 +44,8 @@ def parser():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--threads", type=int, default=1)
-    p.add_argument("--task", default="Pick up the object from the table and release it above the red bin.")
+    p.add_argument("--task", default=DEFAULT_TASK_TEMPLATE,
+                   help="episode task text with optional {object} and {turn} placeholders")
     p.add_argument("--no-release-override", action="store_true",
                    help="Disable forced-open hands and latent hold on release requests")
     commands.add_parser("benchmark", parents=[p], add_help=False,
@@ -66,6 +68,8 @@ def parser():
     p.add_argument("--traces", type=Path, required=True)
     p.add_argument("--episode", type=int, required=True)
     p.add_argument("--label", choices=("success", "failure", "unlabeled"), required=True)
+    p = commands.add_parser("auto-label", help="label existing unlabeled episodes by closest target distance")
+    p.add_argument("--traces", type=Path, required=True)
     return cli
 
 
@@ -80,6 +84,9 @@ def main():
     elif args.command == "export":
         from gear_sonic.utils.grail.offline_export import export
         export(args)
+    elif args.command == "auto-label":
+        from gear_sonic.utils.grail.offline_data import auto_label
+        auto_label(args.traces)
     else:
         from gear_sonic.utils.grail.offline_data import label_episode
         label_episode(args.traces, args.episode, args.label)

@@ -12,6 +12,8 @@ import numpy as np
 
 from .episode import load_initial_pose, reset_scene
 from .observations import Observations
+from .offline_data import distance_label, object_position_columns
+from .offline_task import describe_task
 from .plan import CarryPlannerConfig
 from .task import CarryTask
 
@@ -41,6 +43,7 @@ class OfflineEnvironment:
         self.scene_dir = scene_dir
         self.observations = Observations(model, self.cfg, self.manifest["bps"])
         self.qadr, self.vadr = joint_addresses(model, COMMAND_NAMES)
+        self.object_position_columns = object_position_columns(model)
         joints = [model.joint(name).id for name in COMMAND_NAMES]
         self.actuators = np.array([
             int(np.flatnonzero(model.actuator_trnid[:, 0] == joint)[0]) for joint in joints
@@ -143,12 +146,15 @@ class OfflineEnvironment:
 
     def save(self):
         start = time.perf_counter()
+        result = distance_label(self.trace["qpos"][:, self.object_position_columns], self.plan.final_position)
+        turn_command = self.plan.sparse[0, 1]  # Signed yaw in the generated turn command.
+        task = describe_task(self.scene["task"], self.scene["object_key"], turn_command)
         directory = self.output / f"episode_{self.episode:06d}"
         directory.mkdir()  # Existing episodes must be explicitly removed before recollecting.
         np.savez_compressed(directory / "trace.npz", **self.trace)
         metadata = dict(
-            episode_index=self.episode, env_id=self.env_id, seed=self.seed, label="unlabeled",
-            fps=50, physics_dt=.005, transitions=self.steps, task=self.scene["task"],
+            episode_index=self.episode, env_id=self.env_id, seed=self.seed,
+            fps=50, physics_dt=.005, transitions=self.steps, task=task,
             object_key=self.scene["object_key"],
             scene=relpath(self.scene_dir / "scene.json", directory),
             model=relpath(self.scene_dir / "model.mjb", directory),
@@ -156,6 +162,7 @@ class OfflineEnvironment:
             decoder=relpath(self.scene_dir / self.scene["decoder"], directory),
             initial_pose=relpath(self.scene_dir / self.scene["initial_pose"], directory),
             task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
+            **result,
         )
         (directory / "episode.json").write_text(json.dumps(metadata, indent=2))
         self.timing["write_s"] += time.perf_counter() - start

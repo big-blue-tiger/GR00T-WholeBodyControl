@@ -11,7 +11,9 @@ python -m gear_sonic.scripts.grail_offline collect \
   --num-envs 3 --episodes-per-object 5 --cpu-workers 3
 ```
 
-默认按物体名顺序采集 `100obj` 中的全部 100 个物体，每个物体 5 条，共 500 条。机器人在以本回合物体为圆心的桌外侧圆弧上采样，水平半径为 1.85 米。以垂直桌边、水平向外的方向为 0°，面向桌面看，向右最多 22°、向左最多 24°。释放目标位于扫描场景中红色垃圾桶的桶口中心上方约 0.35 米，世界坐标约为 `(0.015, 4.137, 0.850)` 米。采集记录每次策略执行的轨迹，成功轨迹可在渲染后标注。
+默认按物体名顺序采集 `100obj` 中的全部 100 个物体，每个物体 5 条，共 500 条。机器人在以本回合物体为圆心的桌外侧圆弧上采样，水平半径为 1.85 米。以垂直桌边、水平向外的方向为 0°，默认角度为 −45° 到 +45°，面向桌面看，负角在右侧，正角在左侧。释放目标位于扫描场景中红色垃圾桶的桶口中心上方约 0.35 米，世界坐标约为 `(0.015, 4.137, 0.850)` 米。采集记录每次策略执行的轨迹，并在保存时自动标注。
+
+每条轨迹的 `episode.json` 会保存自然语言任务描述。物体名来自资产名，例如 `pickup_table__apple_0__001` 对应 `apple`。生成的转身命令中，正 yaw 表示向左后方转身，负 yaw 表示向右后方转身，零则省略转身描述。导出会沿用每条轨迹的描述，例如 `Pick up the apple from the table, turn around to the left, and release it above the red bin.`
 
 | 参数 | 说明 |
 |---|---|
@@ -21,7 +23,7 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--cpu-workers` | CPU 仿真进程数，默认 `4` |
 | `--duration` / `--seed` | 每条轨迹的时长（秒）和随机种子，默认 `25` 和 `42` |
 | `--device` / `--threads` | 顶层策略推理设备和 PyTorch 线程数，默认 `cuda:0` 和 `1` |
-| `--task` | 导出数据集使用的任务描述 |
+| `--task` | 自定义任务描述。可用 `{object}` 插入物体名，用 `{turn}` 插入转身短语（含逗号） |
 | `--checkpoint` | 覆盖默认权重，可传入 `.pt` 文件或目录。自定义权重须支持 884 维输入，并与其 `config.yaml` 同目录 |
 | `--dataset-dir` / `--object-key` | 默认数据集为 `gear_sonic/data/grail/100obj`。可重复传入 `--object-key` 来采集指定物体 |
 | `--cache-dir` | 覆盖 MuJoCo 预转换目录。`100obj` 使用其下的 `object_obj/` |
@@ -49,14 +51,23 @@ python -m gear_sonic.scripts.grail_offline render \
 
 ## 3. 标注与导出
 
-检查视频后，将符合任务要求的轨迹标为 `success`。下面以第 0 条为例。
+自动标注使用世界坐标，计算物体原点与本回合释放目标点在整条轨迹上的最小三维欧氏距离（包括首帧和末帧）。最小距离严格小于 `0.2 m` 就标为 `success`，其余标为 `failure`。`episode.json` 保存 `label` 和 `min_target_distance_m`。这个标准衡量物体是否到达释放目标附近。
+
+已有轨迹可以批量补标，无需渲染。`auto-label` 只处理 `unlabeled` 轨迹。
+
+```bash
+python -m gear_sonic.scripts.grail_offline auto-label \
+  --traces outputs/throw_trash_into_bin
+```
+
+如果视频确认第 0 条符合任务要求，可以用 `label` 手动将它标为 `success`。
 
 ```bash
 python -m gear_sonic.scripts.grail_offline label \
-  --traces outputs/my_grail_run --episode 0 --label success
+  --traces outputs/throw_trash_into_bin --episode 0 --label success
 
 python -m gear_sonic.scripts.grail_offline export \
-  --traces outputs/my_grail_run --renders outputs/my_grail_render \
+  --traces outputs/throw_trash_into_bin --renders outputs/throw_trash_into_bin_render \
   --output outputs/my_grail_dataset --labels success
 ```
 
