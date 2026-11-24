@@ -3,7 +3,6 @@
 import json
 from os.path import relpath
 from pathlib import Path
-import pickle
 import resource
 import time
 import traceback
@@ -11,7 +10,7 @@ import traceback
 import mujoco
 import numpy as np
 
-from .episode import reset_scene
+from .episode import load_initial_pose, reset_scene
 from .observations import Observations
 from .plan import CarryPlannerConfig
 from .task import CarryTask
@@ -167,8 +166,7 @@ class OfflineEnvironment:
 def load_environment_scene(scene_dir):
     scene = json.loads((scene_dir / "scene.json").read_text())
     model = mujoco.MjModel.from_binary_path(str(scene_dir / "model.mjb"))
-    with (scene_dir / scene["initial_pose"]).open("rb") as stream:
-        initial = pickle.load(stream)
+    initial = load_initial_pose(scene_dir / scene["initial_pose"])
     return model, scene, initial
 
 

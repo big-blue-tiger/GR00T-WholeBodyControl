@@ -23,7 +23,7 @@ Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming�
 | `REWARD_VALUE_CHECKPOINT` | 实时奖励和价值预测权重，默认使用仓库随附的 `last.pt` |
 | `DATASET_DIR` / `OBJECT_KEY` | 默认数据集为 `gear_sonic/data/grail/1600obj`，起始物体默认为 `pickup_table__soap_dispenser_0__001` |
 | `GRAIL_CACHE_DIR` | 覆盖 MuJoCo 预转换目录。`1600obj` 默认使用其下的 `object_obj/` |
-| `INITIAL_POSE` | 机器人初始姿态文件 |
+| `INITIAL_POSE` | 机器人初始姿态文件。常规搬运默认使用训练首帧 `gear_sonic/config/grail/carry_initial_pose.json`。出生位置以本回合物体为圆心，水平半径为 1.85 米。以垂直桌边、水平向外的方向为 0°，面向桌面看，向右最多 22°、向左最多 24° |
 | `SIM_PYTHON` | 覆盖 Python 解释器，默认使用当前环境的 `python` |
 
 自定义权重须支持 884 维输入，并与其 `config.yaml` 放在同一目录。切换物体前先取得[原始资产和预转换结果](../getting_started/grail_environment.md#批量准备其他物体)。
@@ -49,7 +49,7 @@ python -m gear_sonic.scripts.run_sim_loop \
   --dataset-dir gear_sonic/data/grail/1600obj \
   --object-key pickup_table__soap_dispenser_0__001 \
   --grail-cycle-objects \
-  --initial-pose-file gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl \
+  --initial-pose-file gear_sonic/config/grail/carry_initial_pose.json \
   --scene-config gear_sonic/config/grail/apple_2.yaml \
   --grail-reward-value-checkpoint gear_sonic_deploy/policy/grail_grasp_policy/1119robocasa_carry_table-randomized-20261119_081005/last.pt \
   --enable-image-publish --render-backend both --isaac-headless \

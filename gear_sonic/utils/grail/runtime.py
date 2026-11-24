@@ -1,7 +1,6 @@
 """Simulation-side task, episode, actor IPC and existing C++ v4 bridge."""
 
 import json
-import pickle
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +14,7 @@ from gear_sonic.utils.teleop.zmq.zmq_planner_sender import pack_pose_message
 
 from .observations import Observations
 from .plan import CarryPlannerConfig
-from .episode import reset_scene
+from .episode import load_initial_pose, reset_scene
 from .task import CarryTask
 from .transport import pack, socket, unpack
 
@@ -33,19 +32,7 @@ class GrailRuntime:
         self.duration = EPISODE_DURATION
         self.planner = CarryPlannerConfig(**self.cfg["planner"])
         self.observations = Observations(self.model, self.cfg, self.manifest["bps"])
-        with open(env.config["GRAIL_INITIAL_POSE"], "rb") as stream:
-            self.initial = pickle.load(stream)
-        for key, size in (
-            ("dof", 29),
-            ("hand_dof_pos", 14),
-            ("root_rot", 4),
-            ("root_trans_offset", 3),
-        ):
-            if (
-                np.asarray(self.initial[key]).shape != (size,)
-                or not np.isfinite(self.initial[key]).all()
-            ):
-                raise ValueError(f"Invalid initial pose field {key}")
+        self.initial = load_initial_pose(env.config["GRAIL_INITIAL_POSE"])
         self.recovery = self.recovery_future = self.scene_future = None
         self.scene_data_future = None
         if env.config.get("GRAIL_RECOVERY"):

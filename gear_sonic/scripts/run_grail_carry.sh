@@ -12,14 +12,16 @@ CHECKPOINT=${CHECKPOINT:-$DEFAULT_CHECKPOINT}
 REWARD_VALUE_CHECKPOINT=${REWARD_VALUE_CHECKPOINT:-$DEFAULT_CHECKPOINT}
 SIM_PYTHON=${SIM_PYTHON:-$(command -v python)}
 DATASET_DIR=${DATASET_DIR:-gear_sonic/data/grail/1600obj}
-INITIAL_POSE=${INITIAL_POSE:-gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl}
+DEFAULT_INITIAL_POSE=gear_sonic/config/grail/carry_initial_pose.json
 cache_args=()
 mode_args=(--grail-cycle-objects)
 episode_log=outputs/grail-episodes.jsonl
 if [[ ${1:-} == --recovery ]]; then
   mode_args=(--grail-recovery --grail-recovery-checkpoint "$CHECKPOINT")
   episode_log=outputs/grail-recovery-episodes.jsonl
+  DEFAULT_INITIAL_POSE=gear_sonic/data/grail/init_g1_state/pickup_table__alcohol_1__000_first_frame.pkl
 fi
+INITIAL_POSE=${INITIAL_POSE:-$DEFAULT_INITIAL_POSE}
 simulation_log=${episode_log%-episodes.jsonl}-simulation.log
 if [[ -n ${GRAIL_CACHE_DIR:-} ]]; then
   cache_args=(--grail-cache-dir "$GRAIL_CACHE_DIR")

@@ -6,12 +6,12 @@
 
 ```bash
 python -m gear_sonic.scripts.grail_offline collect \
-  --output outputs/my_grail_run \
+  --output outputs/throw_trash_into_bin \
   --dataset-dir gear_sonic/data/grail/100obj \
-  --num-envs 1 --episodes-per-object 5 --cpu-workers 1
+  --num-envs 3 --episodes-per-object 5 --cpu-workers 3
 ```
 
-默认按物体名顺序采集 `100obj` 中的全部 100 个物体，每个物体 5 条，共 500 条。机器人和物体沿用桌边起点采样。释放目标位于扫描场景中红色垃圾桶的桶口中心上方约 0.35 米，世界坐标约为 `(0.015, 4.137, 0.850)` 米。采集记录每次策略执行的轨迹，成功轨迹可在渲染后标注。
+默认按物体名顺序采集 `100obj` 中的全部 100 个物体，每个物体 5 条，共 500 条。机器人在以本回合物体为圆心的桌外侧圆弧上采样，水平半径为 1.85 米。以垂直桌边、水平向外的方向为 0°，面向桌面看，向右最多 22°、向左最多 24°。释放目标位于扫描场景中红色垃圾桶的桶口中心上方约 0.35 米，世界坐标约为 `(0.015, 4.137, 0.850)` 米。采集记录每次策略执行的轨迹，成功轨迹可在渲染后标注。
 
 | 参数 | 说明 |
 |---|---|
@@ -25,7 +25,7 @@ python -m gear_sonic.scripts.grail_offline collect \
 | `--checkpoint` | 覆盖默认权重，可传入 `.pt` 文件或目录。自定义权重须支持 884 维输入，并与其 `config.yaml` 同目录 |
 | `--dataset-dir` / `--object-key` | 默认数据集为 `gear_sonic/data/grail/100obj`。可重复传入 `--object-key` 来采集指定物体 |
 | `--cache-dir` | 覆盖 MuJoCo 预转换目录。`100obj` 使用其下的 `object_obj/` |
-| `--initial-pose` / `--scene-config` | 初始姿态和场景配置。默认释放点由场景中的 `offline_release_position_scene` 设置 |
+| `--initial-pose` / `--scene-config` | 默认初始姿态与实时搬运共用 `gear_sonic/config/grail/carry_initial_pose.json`。默认释放点由场景中的 `offline_release_position_scene` 设置 |
 | `--no-release-override` | 关闭强制松手和松手后的 latent 锁定 |
 
 切换物体前先取得[原始资产和预转换结果](../getting_started/grail_environment.md#批量准备其他物体)。跨机器移动轨迹用于渲染时，保留轨迹与资产之间的相对目录布局。
@@ -36,8 +36,8 @@ Isaac Sim 根据每条轨迹引用的场景配置读取对应的物体 USD。默
 
 ```bash
 python -m gear_sonic.scripts.grail_offline render \
-  --traces outputs/my_grail_run --output outputs/my_grail_render \
-  --render-envs 1 --encode-workers 4
+  --traces outputs/throw_trash_into_bin --output outputs/throw_trash_into_bin_render \
+  --render-envs 2 --encode-workers 4
 ```
 
 | 参数 | 说明 |

@@ -55,8 +55,8 @@ grasp_contact:
   solimp: [0.999, 0.9999, 0.001, 0.5, 2.0]
 robot:
   init_z_offset: 0.001
-  # Reference-free reset: random +/-1 m along the table, 1.5 m outward,
-  # facing its center. Omit initial_position_xy to retain this sampling.
+  # The initial pose can select an object-centered spawn arc and heading.
+  # The line fallback samples +/-1 m along the table, with a 1.5 m outward offset by default.
   observation_joint_names:
   - left_hip_pitch_joint
   - right_hip_pitch_joint
