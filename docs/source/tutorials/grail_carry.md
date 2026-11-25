@@ -12,6 +12,8 @@ DEVICE=cuda:0 bash gear_sonic/scripts/run_grail_carry.sh
 
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。退出时，仿真、策略和 decoder 终端按 **Ctrl+C**，相机窗口按 **Q**。
 
+Isaac 相机把 NuRec 背景和机器人、任务物体分层并行渲染。同一帧的两层使用相同的头部相机位姿。`apple_2.yaml` 的 `isaac_scene.occlusion_proxy` 指定桌面深度网格，让相机在正确遮挡物体的同时保留扫描桌面的颜色。设 `show_colliders: true` 可查看单次混合渲染中的对齐调试网格。
+
 搬运从 `OBJECT_KEY` 指定的物体开始。每次回合结束、机器人摔倒或在 MuJoCo 窗口按 **Backspace** 重置时，按物体标识的字典序切到下一件，末尾回到开头。轮换使用具备 USD、BPS 和 MuJoCo 预转换缓存的物体。`outputs/grail-episodes.jsonl` 中的 `object_key` 记录当前物体。
 
 两个一键启动命令的 `GRAIL - Simulation` 终端在运行中约每 0.1 秒原地刷新一行，只显示 `Reward`、`Value` 和 `TD Advantage` 的标签与数值。其他仿真输出写入 `outputs/grail-simulation.log`（搬运）或 `outputs/grail-recovery-simulation.log`（恢复）。MuJoCo 主窗口不显示叠字。

@@ -28,6 +28,10 @@ isaac_scene:
   asset_path: gear_sonic/data/scene/deploy/scene_combined_3dgs.usda
   # Two points along the robot-facing long edge in the authored scene frame.
   front_edge_xy: [[-4.4, 0.726], [-3.1, 0.7927]]
+  # The live Isaac foreground uses this fitted surface for depth testing.
+  occlusion_proxy:
+    asset_path: gear_sonic/data/scene/deploy/scene_combined.usda
+    prim_path: /World/Collision/Tabletop
   # Show the MuJoCo floor and tabletop in Isaac for alignment debugging.
   show_colliders: false
 # Red bin opening centered at (-3.568, -3.073, 0.50) in the deployed scan.

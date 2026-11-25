@@ -93,8 +93,6 @@ class SceneVisual:
 
 def add_gaussian_scene(stage, config):
     """Reference the visual background and return its render settings."""
-    from .isaac_visual import world_matrix
-
     asset = Path(config["asset_path"])
     if not asset.is_file():
         raise FileNotFoundError(f"Isaac 3DGS background does not exist: {asset}")
@@ -120,6 +118,27 @@ def add_gaussian_scene(stage, config):
         root = UsdGeom.Xform.Define(stage, "/GaussianScene")
         if not root.GetPrim().GetReferences().AddReference(str(asset)):
             raise ValueError(f"Could not reference 3DGS background: {asset}")
+    _place_scan(root, config)
+    # Layer metadata does not compose through a prim reference. Preserve the
+    # scan's tonemapping/compositing settings explicitly in the render app.
+    return source.GetRootLayer().customLayerData.get("renderSettings", {})
+
+
+def add_occlusion_proxy(stage, config):
+    proxy = config["occlusion_proxy"]
+    asset = Path(__file__).resolve().parents[3] / proxy["asset_path"]
+    root = UsdGeom.Xform.Define(stage, "/Occlusion")
+    mesh = UsdGeom.Mesh.Define(stage, "/Occlusion/Surface")
+    mesh.GetPrim().GetReferences().AddReference(str(asset), proxy["prim_path"])
+    if not mesh.GetPointsAttr().HasAuthoredValue():
+        raise ValueError(f"Missing 3DGS occlusion mesh {proxy['prim_path']} in {asset}")
+    UsdPhysics.CollisionAPI(mesh).CreateCollisionEnabledAttr(False)
+    _place_scan(root, config)
+
+
+def _place_scan(root, config):
+    from .isaac_visual import world_matrix
+
     # Gf row-vector convention. The child's authored transform
     # composes underneath this placement; there is deliberately no scale op.
     rotation = np.empty(9)
@@ -129,6 +148,3 @@ def add_gaussian_scene(stage, config):
     root.AddTransformOp(UsdGeom.XformOp.PrecisionDouble).Set(
         Gf.Matrix4d(matrix.T.tolist())
     )
-    # Layer metadata does not compose through a prim reference. Preserve the
-    # scan's tonemapping/compositing settings explicitly in the render app.
-    return source.GetRootLayer().customLayerData.get("renderSettings", {})

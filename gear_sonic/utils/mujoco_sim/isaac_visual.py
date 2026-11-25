@@ -12,7 +12,7 @@ import mujoco
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
-from .scene_visual import SceneVisual, add_gaussian_scene
+from .scene_visual import SceneVisual, add_gaussian_scene, add_occlusion_proxy
 
 
 ROBOT_SUBTREE = "/g1_29dof_with_hand_rev_1_0"
@@ -49,16 +49,67 @@ def _centered_capture(focal_px, principal_offset_px):
     return (int(capture[0]), int(capture[1])), focal, transform
 
 
-class VisualPuppet:
+class EgoCamera:
+    def __init__(self, stage, model, *, centered_camera=False):
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        self.camera = UsdGeom.Camera.Define(stage, "/EgoCamera")
+        self.camera_op = self.camera.AddTransformOp(UsdGeom.XformOp.PrecisionDouble)
+        self.camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera")
+        if self.camera_id < 0:
+            raise ValueError("MuJoCo model must contain head_camera")
+        if model.cam_projection[self.camera_id] != 0:
+            raise ValueError("This G1 renderer expects a perspective head_camera")
+        focal = 20.0  # USD lens units cancel in the aperture/focal ratio
+        self.camera.CreateFocalLengthAttr(focal)
+        self.capture_size = EGO_SIZE
+        self.output_to_capture = None
+        sensor = model.cam_sensorsize[self.camera_id]
+        if sensor.any():
+            fx, fy, offset_x, offset_y = model.cam_intrinsic[self.camera_id]
+            if centered_camera:
+                # Keep the NuRec frustum symmetric. Restore the calibrated
+                # principal point after composing both layers.
+                pixels_per_unit = np.asarray(EGO_SIZE) / sensor
+                focal_px = pixels_per_unit * (fx, fy)
+                principal_offset_px = pixels_per_unit * (-offset_x, -offset_y)
+                self.capture_size, capture_focal, self.output_to_capture = _centered_capture(
+                    focal_px, principal_offset_px,
+                )
+                horizontal, vertical = focal / capture_focal * np.asarray(self.capture_size)
+            else:
+                horizontal, vertical = focal * sensor / (fx, fy)
+                self.camera.CreateHorizontalApertureOffsetAttr(float(focal * offset_x / fx))
+                self.camera.CreateVerticalApertureOffsetAttr(float(-focal * offset_y / fy))
+        else:
+            vertical = 2.0 * focal * np.tan(np.deg2rad(model.cam_fovy[self.camera_id]) / 2.0)
+            horizontal = vertical * EGO_SIZE[0] / EGO_SIZE[1]
+        self.camera.CreateVerticalApertureAttr(float(vertical))
+        self.camera.CreateHorizontalApertureAttr(float(horizontal))
+        self.camera.CreateClippingRangeAttr(Gf.Vec2f(
+            float(model.vis.map.znear * model.stat.extent),
+            float(model.vis.map.zfar * model.stat.extent),
+        ))
+        self.camera.CreateProjectionAttr(UsdGeom.Tokens.perspective)
+
+    def set_pose(self, position, rotation):
+        # Both native USD and MuJoCo cameras look along -Z with +Y up.
+        matrix = world_matrix(position, rotation)
+        self.camera_op.Set(Gf.Matrix4d(matrix.T.tolist()))
+
+    def update(self, data):
+        self.set_pose(data.cam_xpos[self.camera_id], data.cam_xmat[self.camera_id])
+
+
+class VisualPuppet(EgoCamera):
     """Pure USD setup/pose mapping, also usable for numerical alignment checks."""
 
     def __init__(self, stage, model, asset_path=None, *, centered_camera=False):
+        super().__init__(stage, model, centered_camera=centered_camera)
         self.stage = stage
         self.model = model
         if asset_path is None:
             asset_path = Path(__file__).resolve().parents[2] / "data/robots/g1/g1_43dof_s3.usda"
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         root = stage.DefinePrim("/Robot", "Xform")
         # Explicit reference excludes /SimpleRoom and /physicsScene from the asset.
         root.GetReferences().AddReference(str(asset_path), ROBOT_SUBTREE)
@@ -130,44 +181,6 @@ class VisualPuppet:
                 prim.SetActive(False)  # disables drive APIs as well
         self._local_materials([prim for prim in prims if prim])
 
-        self.camera = UsdGeom.Camera.Define(stage, "/EgoCamera")
-        self.camera_op = self.camera.AddTransformOp(UsdGeom.XformOp.PrecisionDouble)
-        self.camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera")
-        if self.camera_id < 0:
-            raise ValueError("MuJoCo model must contain head_camera")
-        if model.cam_projection[self.camera_id] != 0:
-            raise ValueError("This G1 renderer expects a perspective head_camera")
-        focal = 20.0  # USD lens units cancel in the aperture/focal ratio
-        self.camera.CreateFocalLengthAttr(focal)
-        self.capture_size = EGO_SIZE
-        self.output_to_capture = None
-        sensor = model.cam_sensorsize[self.camera_id]
-        if sensor.any():
-            fx, fy, offset_x, offset_y = model.cam_intrinsic[self.camera_id]
-            if centered_camera:
-                # Keep the NuRec capture symmetric. Restore the calibrated
-                # principal point after RTX has composited the splats and meshes.
-                pixels_per_unit = np.asarray(EGO_SIZE) / sensor
-                focal_px = pixels_per_unit * (fx, fy)
-                principal_offset_px = pixels_per_unit * (-offset_x, -offset_y)
-                self.capture_size, capture_focal, self.output_to_capture = _centered_capture(
-                    focal_px, principal_offset_px,
-                )
-                horizontal, vertical = focal / capture_focal * np.asarray(self.capture_size)
-            else:
-                horizontal, vertical = focal * sensor / (fx, fy)
-                self.camera.CreateHorizontalApertureOffsetAttr(float(focal * offset_x / fx))
-                self.camera.CreateVerticalApertureOffsetAttr(float(-focal * offset_y / fy))
-        else:
-            vertical = 2.0 * focal * np.tan(np.deg2rad(model.cam_fovy[self.camera_id]) / 2.0)
-            horizontal = vertical * EGO_SIZE[0] / EGO_SIZE[1]
-        self.camera.CreateVerticalApertureAttr(float(vertical))
-        self.camera.CreateHorizontalApertureAttr(float(horizontal))
-        self.camera.CreateClippingRangeAttr(Gf.Vec2f(
-            float(model.vis.map.znear * model.stat.extent),
-            float(model.vis.map.zfar * model.stat.extent),
-        ))
-        self.camera.CreateProjectionAttr(UsdGeom.Tokens.perspective)
         self.transforms = {}
 
     def _local_materials(self, prims):
@@ -200,16 +213,13 @@ class VisualPuppet:
             transforms[child] = transforms[parent] @ offset
         for path, matrix in transforms.items():
             self.ops[path].Set(Gf.Matrix4d(matrix.T.tolist()))
-        # Both native USD and MuJoCo cameras look along -Z with +Y up.
-        # Only transpose the matrix; no ROS/OpenCV axis correction is needed.
-        matrix = world_matrix(data.cam_xpos[self.camera_id], data.cam_xmat[self.camera_id])
-        self.camera_op.Set(Gf.Matrix4d(matrix.T.tolist()))
+        super().update(data)
         self.transforms = transforms
 
 
 class IsaacVisual:
     def __init__(self, app, model, texture_dir, scene_config=None,
-                 object_asset_path=None):
+                 object_asset_path=None, *, layer="combined"):
         import omni.replicator.core as rep
         from omni.kit.viewport.utility import get_active_viewport_window
         import omni.timeline
@@ -224,30 +234,22 @@ class IsaacVisual:
         omni.usd.get_context().new_stage()
         stage = omni.usd.get_context().get_stage()
         has_gaussians = bool(scene_config and scene_config.get("enabled", False))
-        self.puppet = VisualPuppet(stage, model, centered_camera=has_gaussians)
-        show_colliders = True
-        if has_gaussians:
+        camera_type = EgoCamera if layer == "background" else VisualPuppet
+        self.puppet = camera_type(stage, model, centered_camera=has_gaussians)
+        if has_gaussians and layer != "foreground":
             for name, value in add_gaussian_scene(stage, scene_config).items():
                 app.set_setting("/" + name.replace(":", "/"), value)
-            show_colliders = scene_config.get("show_colliders", False)
-        self.scene = SceneVisual(stage, model, show_colliders=show_colliders,
-                                 object_asset_path=object_asset_path)
-        floor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
-        if floor_id < 0 or model.geom_type[floor_id] != mujoco.mjtGeom.mjGEOM_PLANE:
-            raise ValueError("Expected the current G1 floor plane")
-        # Large visual plane at the MuJoCo floor transform; no collision/rigid body.
-        floor = UsdGeom.Mesh.Define(stage, "/Ground")
-        floor.CreatePointsAttr([(-100, -100, 0), (100, -100, 0), (100, 100, 0), (-100, 100, 0)])
-        floor.CreateFaceVertexCountsAttr([4])
-        floor.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
-        floor.CreateDisplayColorAttr([Gf.Vec3f(0.2, 0.3, 0.4)])
-        if not show_colliders:
-            floor.MakeInvisible()
-        self._ground_material(floor, model, floor_id, texture_dir)
         initial = mujoco.MjData(model)
         mujoco.mj_forward(model, initial)
-        floor.AddTransformOp().Set(Gf.Matrix4d(world_matrix(
-            initial.geom_xpos[floor_id], initial.geom_xmat[floor_id]).T.tolist()))
+        self.scene = None
+        if layer != "background":
+            show_colliders = not has_gaussians or scene_config.get("show_colliders", False)
+            self.scene = SceneVisual(stage, model, show_colliders=show_colliders,
+                                     object_asset_path=object_asset_path)
+            if layer == "combined":
+                self._add_ground(stage, model, initial, texture_dir, visible=show_colliders)
+        if layer == "foreground":
+            add_occlusion_proxy(stage, scene_config)
         light = UsdLux.DomeLight.Define(stage, "/DomeLight")
         light.CreateIntensityAttr(1000)
         self.puppet.update(initial)
@@ -256,6 +258,12 @@ class IsaacVisual:
         self.product_path = self.product.path
         self.rgb = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb.attach([self.product_path])
+        self.ids = None
+        if layer == "foreground":
+            self.ids = rep.AnnotatorRegistry.get_annotator(
+                "instance_id_segmentation_fast", init_params={"colorize": False},
+            )
+            self.ids.attach([self.product_path])
         # Creating the stage re-enables Kit's default viewport after the app
         # disabled it. It renders an unused camera over the entire 3DGS room.
         # Only the dedicated /EgoCamera render product is needed, including
@@ -282,6 +290,21 @@ class IsaacVisual:
         else:
             raise RuntimeError("Isaac RGB annotator did not initialize in 10 captures")
         self.submit_s = self.capture_s = self.readback_s = 0.0
+
+    def _add_ground(self, stage, model, initial, texture_dir, *, visible):
+        floor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        if floor_id < 0 or model.geom_type[floor_id] != mujoco.mjtGeom.mjGEOM_PLANE:
+            raise ValueError("Expected the current G1 floor plane")
+        floor = UsdGeom.Mesh.Define(stage, "/Ground")
+        floor.CreatePointsAttr([(-100, -100, 0), (100, -100, 0), (100, 100, 0), (-100, 100, 0)])
+        floor.CreateFaceVertexCountsAttr([4])
+        floor.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        floor.CreateDisplayColorAttr([Gf.Vec3f(0.2, 0.3, 0.4)])
+        if not visible:
+            floor.MakeInvisible()
+        self._ground_material(floor, model, floor_id, texture_dir)
+        floor.AddTransformOp().Set(Gf.Matrix4d(world_matrix(
+            initial.geom_xpos[floor_id], initial.geom_xmat[floor_id]).T.tolist()))
 
     def _ground_material(self, floor, model, floor_id, texture_dir):
         """Reuse the compiled MuJoCo checker pixels and repeats per metre."""
@@ -327,12 +350,7 @@ class IsaacVisual:
         material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
         UsdShade.MaterialBindingAPI.Apply(floor.GetPrim()).Bind(material)
 
-    def render(self, data, *, warming_up=False):
-        started = time.perf_counter()
-        with Sdf.ChangeBlock():
-            self.puppet.update(data)
-            self.scene.update(data)
-        submitted = time.perf_counter()
+    def capture_rgb(self, *, warming_up=False):
         self.app.set_setting("/rtx/ecoMode/enabled", False)
         # Synchronous capture prevents annotator data from belonging to the prior pose.
         # Timeline is stopped and delta_time=0: no Isaac physics is advanced.
@@ -344,7 +362,33 @@ class IsaacVisual:
             if warming_up:
                 return None
             raise RuntimeError(f"Isaac returned an invalid camera frame: {rgba.shape}")
-        rgb = np.ascontiguousarray(rgba[:, :, :3])
+        return np.ascontiguousarray(rgba[:, :, :3]), captured
+
+    def render(self, data, *, warming_up=False, background=None):
+        started = time.perf_counter()
+        with Sdf.ChangeBlock():
+            self.puppet.update(data)
+            if self.scene is not None:
+                self.scene.update(data)
+        submitted = time.perf_counter()
+        capture = self.capture_rgb(warming_up=warming_up)
+        if capture is None:
+            return None
+        rgb, captured = capture
+        if self.ids is not None:
+            segmentation = self.ids.get_data()
+            ids = np.asarray(segmentation["data"]).squeeze()
+            if ids.shape != rgb.shape[:2]:
+                if warming_up:
+                    return None
+                raise RuntimeError(f"Isaac returned an invalid foreground mask: {ids.shape}")
+            if not warming_up:
+                # Only the robot and task object supply color. The tabletop
+                # participates in the depth test through the same render pass.
+                visible_ids = [int(key) for key, path in segmentation["info"]["idToLabels"].items()
+                               if path.startswith(("/Robot/", "/Task/grail_object/"))]
+                mesh_visible = np.isin(ids, visible_ids)
+                rgb = np.where(mesh_visible[..., None], rgb, background())
         if self.puppet.output_to_capture is not None:
             import cv2
 
@@ -358,6 +402,8 @@ class IsaacVisual:
 
     def close(self):
         # Isaac 5.0 attach accepts HydraTexture objects; detach expects USD paths.
+        if self.ids is not None:
+            self.ids.detach([self.product_path])
         self.rgb.detach([self.product_path])
         if self.product is not None:
             self.product.destroy()

@@ -1,5 +1,6 @@
 """Camera subprocess entry point. Isaac must initialize before native imports."""
 
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,7 @@ def run(options):
     os.environ.setdefault("MUJOCO_GL", "egl")
     app = None
     isaac = None
+    background = None
     renderers = {}
     servers = {}
     context = None
@@ -89,11 +91,19 @@ def run(options):
             from gear_sonic.utils.grail.scene import build_scene
 
         if app is not None:
+            from gear_sonic.utils.mujoco_sim.isaac_background import BackgroundRenderer
             from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
 
-            isaac = IsaacVisual(app, model, os.path.dirname(options["model_path"]),
-                                scene_config=options["isaac_scene"],
-                                object_asset_path=options["isaac_object_asset"])
+            scene = options["isaac_scene"] or {}
+            layered = scene.get("enabled") and scene.get("occlusion_proxy") and not scene.get("show_colliders")
+            isaac = IsaacVisual(
+                app, model, os.path.dirname(options["model_path"]), scene_config=scene,
+                object_asset_path=options["isaac_object_asset"], layer="foreground" if layered else "combined",
+            )
+            if layered:
+                background = BackgroundRenderer(options["model_path"], scene, isaac.puppet.capture_size)
+                print(f"[Render] Parallel Isaac layers ready; NuRec background PID {background.process.pid}.",
+                      flush=True)
 
         def init_mujoco_renderers():
             if options["backend"] in ("mujoco", "both"):
@@ -179,7 +189,12 @@ def run(options):
             mujoco.mj_forward(model, data)
             started = time.monotonic()
             if isaac is not None:
-                isaac_image = isaac.render(data)
+                background_rgb = None
+                if background is not None:
+                    camera_id = isaac.puppet.camera_id
+                    background.submit(last_sequence, data.cam_xpos[camera_id], data.cam_xmat[camera_id])
+                    background_rgb = partial(background.receive, last_sequence)
+                isaac_image = isaac.render(data, background=background_rgb)
                 # Send immediately, before the comparison renderer starts.
                 publish("isaac", {"ego_view": isaac_image}, packet["timestamp"])
             if renderers:
@@ -208,10 +223,11 @@ def run(options):
     except Exception:
         # Kit disables its stderr/log bridge during close(); print the cause
         # before cleanup so a failed renderer always leaves a useful error.
-        import traceback
-        failed = True
-        traceback.print_exc()
-        raise
+        if not stopping:
+            import traceback
+            failed = True
+            traceback.print_exc()
+            raise
     finally:
         if preview_created:
             import cv2
@@ -229,6 +245,8 @@ def run(options):
         for renderer in renderers.values():
             renderer.close()
         try:
+            if background is not None:
+                background.close()
             if isaac is not None:
                 isaac.close()
         except Exception:
