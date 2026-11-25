@@ -21,7 +21,7 @@ def main():
     cli.add_argument("--episodes", type=positive_int, default=100)
     cli.add_argument("--trials", type=positive_int, default=3)
     cli.add_argument("--render-envs", type=positive_int, default=1,
-                     help="manual isolated Isaac concurrency limit (default: 1)")
+                     help="concurrent replay jobs, each using two Isaac processes with layered rendering (default: 1)")
     cli.add_argument("--encode-workers", type=positive_int, default=4)
     args = cli.parse_args()
     paths = episodes(args.traces)

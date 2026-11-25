@@ -6,6 +6,8 @@ import mujoco
 import numpy as np
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
+from .isaac_background import occlusion_proxy_path
+
 
 class SceneVisual:
     def __init__(self, stage, model, show_colliders=True, object_asset_path=None):
@@ -126,7 +128,7 @@ def add_gaussian_scene(stage, config):
 
 def add_occlusion_proxy(stage, config):
     proxy = config["occlusion_proxy"]
-    asset = Path(__file__).resolve().parents[3] / proxy["asset_path"]
+    asset = occlusion_proxy_path(config)
     root = UsdGeom.Xform.Define(stage, "/Occlusion")
     mesh = UsdGeom.Mesh.Define(stage, "/Occlusion/Surface")
     mesh.GetPrim().GetReferences().AddReference(str(asset), proxy["prim_path"])

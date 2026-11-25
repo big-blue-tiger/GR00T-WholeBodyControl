@@ -39,10 +39,11 @@ class EpisodeVideo:
             self.publish_and_mux(packet)
 
     def publish_and_mux(self, packet):
-        # Take the access unit before the MP4 muxer changes its packet timestamps.
-        self.preview.send(msgpack.packb(dict(
-            episode_id=self.episode_id, step=packet.pts, keyframe=packet.is_keyframe, h264=bytes(packet),
-        ), use_bin_type=True), flags=zmq.NOBLOCK)
+        if self.preview is not None:
+            # Take the access unit before the MP4 muxer changes its packet timestamps.
+            self.preview.send(msgpack.packb(dict(
+                episode_id=self.episode_id, step=packet.pts, keyframe=packet.is_keyframe, h264=bytes(packet),
+            ), use_bin_type=True), flags=zmq.NOBLOCK)
         self.container.mux(packet)
 
     def finish(self, timestamps):

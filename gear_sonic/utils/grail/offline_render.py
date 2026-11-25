@@ -160,13 +160,22 @@ def scene_assets(scene_path):
     dependencies = [dataset / name for name in manifest["dependencies"]]
     background = scene["config"].get("isaac_scene")
     if background and background.get("enabled"):
-        background["asset_path"] = str(scene_path.parent / background["asset_path"])
+        asset = (scene_path.parent / background["asset_path"]).resolve()
+        background["asset_path"] = str(asset)
+        if asset.name == "scene_combined_3dgs.usda":
+            # Older scene snapshots predate the proxy entry for this scan.
+            background.setdefault("occlusion_proxy", dict(
+                asset_path=str(asset.with_name("scene_combined.usda")),
+                prim_path="/World/Collision/Tabletop",
+            ))
     return source, dependencies, background
 
 
 def render_identity(paths, requested, encode_workers, gpu):
     """Fingerprint assets and implementation without launching a renderer."""
     from importlib import metadata
+
+    from gear_sonic.utils.mujoco_sim.isaac_background import occlusion_proxy_path, uses_layered_rendering
 
     from .render_pipeline import ROBOT_MJCF
 
@@ -183,11 +192,15 @@ def render_identity(paths, requested, encode_workers, gpu):
         assets.update(path.resolve() for path in [source, *dependencies])
         if background and background.get("enabled"):
             assets.add(Path(background["asset_path"]).resolve())
+        if uses_layered_rendering(background):
+            assets.add(occlusion_proxy_path(background).resolve())
     scene_hashes = {os.path.relpath(p, scene_root): digest_file(p) for p in scene_paths}
     visual_dir = Path(__file__).parents[1] / "mujoco_sim"
     implementation = [
         Path(__file__), Path(__file__).with_name("render_pipeline.py"),
-        *(visual_dir / name for name in ("isaac_visual.py", "scene_visual.py", "isaac_renderer.kit")),
+        *(visual_dir / name for name in (
+            "isaac_visual.py", "isaac_background.py", "scene_visual.py", "render_worker.py", "isaac_renderer.kit",
+        )),
     ]
     return dict(
         gpu=gpu["name"],
@@ -361,7 +374,9 @@ def run_jobs(job):
         model_path = (first.parent / meta["model"]).resolve()
         source, _, background = scene_assets(scene_path)
         model = load_replay_model(model_path)
-        visual = IsaacVisual(app, model, job["output"], background, str(source))
+        visual = IsaacVisual(
+            app, model, job["output"], background, source, model_path=model_path, model_loader=load_replay_model,
+        )
         job["startup_s"] = booted - boot_started
         job["scene_load_s"] = time.perf_counter() - booted
         with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as pool:

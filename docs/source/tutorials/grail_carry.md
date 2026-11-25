@@ -8,11 +8,13 @@
 
 ```bash
 DEVICE=cuda:0 bash gear_sonic/scripts/run_grail_carry.sh
+
+DEVICE=cuda:0 bash gear_sonic/scripts/run_grail_carry_peach_bottle.sh
 ```
 
 Decoder 就绪后，在其窗口按 **`]`**，再按 **Enter** 开启 streaming。退出时，仿真、策略和 decoder 终端按 **Ctrl+C**，相机窗口按 **Q**。
 
-Isaac 相机把 NuRec 背景和机器人、任务物体分层并行渲染。同一帧的两层使用相同的头部相机位姿。`apple_2.yaml` 的 `isaac_scene.occlusion_proxy` 指定桌面深度网格，让相机在正确遮挡物体的同时保留扫描桌面的颜色。设 `show_colliders: true` 可查看单次混合渲染中的对齐调试网格。
+Isaac 相机默认使用分层 3DGS 渲染。同一帧用相同的头部相机位姿并行渲染 NuRec 背景与机器人、任务物体前景。`apple_2.yaml` 的 `isaac_scene.occlusion_proxy` 指定 `gear_sonic/data/scene/deploy/scene_combined.usda` 中的桌面深度网格，让桌面遮挡前景时保留扫描颜色。设 `show_colliders: true` 可切换到单次混合渲染，查看对齐调试网格。
 
 搬运从 `OBJECT_KEY` 指定的物体开始。每次回合结束、机器人摔倒或在 MuJoCo 窗口按 **Backspace** 重置时，按物体标识的字典序切到下一件，末尾回到开头。轮换使用具备 USD、BPS 和 MuJoCo 预转换缓存的物体。`outputs/grail-episodes.jsonl` 中的 `object_key` 记录当前物体。
 
@@ -41,7 +43,7 @@ conda activate gr00t-sim
 POLICY_BACKEND=gr00t bash gear_sonic/scripts/run_grail_carry.sh --cycle-objects
 ```
 
-`--cycle-objects` 按字典序轮换 `100obj` 中已准备的物体，每回合换一个，末尾回到开头，直到按 **Ctrl+C**。可为至少两个物体分别传入 `--object-key`，按指定顺序轮换。每回合默认运行 25 秒仿真时间，可用 `--duration` 调整。有限采集时省略 `--cycle-objects`，默认跑 `pickup_table__alcohol_10__001` 一回合，可用 `--episodes-per-object` 设置每个物体的回合数。初始姿态、转身描述和红桶目标沿用[离线采集](grail_offline.md#1-采集轨迹)。MuJoCo 只推进物理，Isaac 在 headless 模式渲染单路 `ego_view`。启动脚本管理 SONIC decoder。
+`--cycle-objects` 按字典序轮换 `100obj` 中已准备的物体，每回合换一个，末尾回到开头，直到按 **Ctrl+C**。可为至少两个物体分别传入 `--object-key`，按指定顺序轮换。每回合默认运行 25 秒仿真时间，可用 `--duration` 调整。有限采集时省略 `--cycle-objects`，默认跑 `pickup_table__alcohol_10__001` 一回合，可用 `--episodes-per-object` 设置每个物体的回合数。初始姿态、转身描述和红桶目标沿用[离线采集](grail_offline.md#1-采集轨迹)。MuJoCo 推进物理，Isaac 在 headless 模式使用同一套分层 3DGS 渲染，合成单路 `ego_view`。启动脚本管理 SONIC decoder。
 
 | 环境变量 | 说明 |
 |---|---|
@@ -52,11 +54,11 @@ POLICY_BACKEND=gr00t bash gear_sonic/scripts/run_grail_carry.sh --cycle-objects
 
 | 通道 | 数据 |
 |---|---|
-| 容器回环 `127.0.0.1:5550` | ZMQ `REQ/REP` 发送原始 RGB、同帧状态和任务文本，在同一请求中返回 40 步动作块。用 `GR00T_PORT` 改端口 |
+| 容器回环 `127.0.0.1:5550` | ZMQ `REQ/REP` 发送合成后的原始 RGB、同帧状态和任务文本，在同一请求中返回 40 步动作块。用 `GR00T_PORT` 改端口 |
 | 容器内 `decoder.sock` | 每 20 ms 仿真时间送出当前动作，由 SONIC 返回当前步的控制指令 |
-| 容器 `5555` | ZMQ `PUB/SUB` 发布录像编码产生的 H.264 包。用 `--preview-port` 改端口 |
+| 容器 `5555` | 异步模式通过 ZMQ `PUB/SUB` 发布录像编码产生的 H.264 包。用 `--preview-port` 改端口 |
 
-Isaac 对每个控制步取帧一次。GR00T 异步推理，控制循环按当前步与观测步的差值从动作块取动作。动作耗尽后最多保持末动作 10 步，再冻结仿真并复用当前画面请求动作。视频按仿真时间保存为 50 fps，同一份编码包也用于预览。实际仿真速度取决于每个控制步的渲染和执行耗时。
+Isaac 每个控制步合成一帧，录像和 GR00T 观测共用这路 RGB。默认异步推理，控制循环按当前步与观测步的差值从动作块取动作。动作耗尽后最多保持末动作 10 步，再冻结仿真并复用当前画面请求动作。加 `--inference-mode sync` 后，每 10 步采集观测并等待新动作块。两种模式都按仿真时间保存 50 fps 录像，异步模式还复用编码包发布预览。实际仿真速度取决于每个控制步的渲染和执行耗时。
 
 ### 通过 SSH 查看
 
@@ -164,4 +166,4 @@ python -m gear_sonic.scripts.run_camera_viewer --camera-host localhost --camera-
 python -m gear_sonic.scripts.run_camera_viewer --camera-host localhost --camera-port 5559
 ```
 
-双渲染时 `5555` 为 Isaac、`5559` 为 MuJoCo。单渲染使用 `5555`。`--fps` 设置录像帧率，`--output-path` 设置录像目录。按 **R** 开始或停止录像，按 **Q** 退出。
+双渲染时 `5555` 为 Isaac 合成画面、`5559` 为 MuJoCo 对比画面。单渲染使用 `5555`。`--fps` 设置录像帧率，`--output-path` 设置录像目录。按 **R** 开始或停止录像，按 **Q** 退出。

@@ -12,6 +12,7 @@ import mujoco
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
+from .isaac_background import BackgroundRenderer, uses_layered_rendering
 from .scene_visual import SceneVisual, add_gaussian_scene, add_occlusion_proxy
 
 
@@ -219,11 +220,17 @@ class VisualPuppet(EgoCamera):
 
 class IsaacVisual:
     def __init__(self, app, model, texture_dir, scene_config=None,
-                 object_asset_path=None, *, layer="combined"):
+                 object_asset_path=None, *, model_path=None, model_loader=None, background_only=False):
         import omni.replicator.core as rep
         from omni.kit.viewport.utility import get_active_viewport_window
         import omni.timeline
         import omni.usd
+
+        self.background = None
+        self.sequence = 0
+        layered = not background_only and uses_layered_rendering(scene_config)
+        if layered and model_path is None:
+            raise ValueError("Layered Isaac rendering requires a MuJoCo model path")
 
         self.app = app
         self.rep = rep
@@ -234,22 +241,22 @@ class IsaacVisual:
         omni.usd.get_context().new_stage()
         stage = omni.usd.get_context().get_stage()
         has_gaussians = bool(scene_config and scene_config.get("enabled", False))
-        camera_type = EgoCamera if layer == "background" else VisualPuppet
+        camera_type = EgoCamera if background_only else VisualPuppet
         self.puppet = camera_type(stage, model, centered_camera=has_gaussians)
-        if has_gaussians and layer != "foreground":
+        if has_gaussians and not layered:
             for name, value in add_gaussian_scene(stage, scene_config).items():
                 app.set_setting("/" + name.replace(":", "/"), value)
         initial = mujoco.MjData(model)
         mujoco.mj_forward(model, initial)
         self.scene = None
-        if layer != "background":
+        if not background_only:
             show_colliders = not has_gaussians or scene_config.get("show_colliders", False)
             self.scene = SceneVisual(stage, model, show_colliders=show_colliders,
                                      object_asset_path=object_asset_path)
-            if layer == "combined":
+            if layered:
+                add_occlusion_proxy(stage, scene_config)
+            else:
                 self._add_ground(stage, model, initial, texture_dir, visible=show_colliders)
-        if layer == "foreground":
-            add_occlusion_proxy(stage, scene_config)
         light = UsdLux.DomeLight.Define(stage, "/DomeLight")
         light.CreateIntensityAttr(1000)
         self.puppet.update(initial)
@@ -259,7 +266,7 @@ class IsaacVisual:
         self.rgb = rep.AnnotatorRegistry.get_annotator("rgb")
         self.rgb.attach([self.product_path])
         self.ids = None
-        if layer == "foreground":
+        if layered:
             self.ids = rep.AnnotatorRegistry.get_annotator(
                 "instance_id_segmentation_fast", init_params={"colorize": False},
             )
@@ -290,6 +297,16 @@ class IsaacVisual:
         else:
             raise RuntimeError("Isaac RGB annotator did not initialize in 10 captures")
         self.submit_s = self.capture_s = self.readback_s = 0.0
+        if layered:
+            try:
+                self.background = BackgroundRenderer(
+                    model_path, scene_config, self.puppet.capture_size, model_loader=model_loader,
+                )
+            except BaseException:
+                self.close()
+                raise
+            print(f"[Render] Parallel Isaac layers ready; NuRec background PID {self.background.process.pid}.",
+                  flush=True)
 
     def _add_ground(self, stage, model, initial, texture_dir, *, visible):
         floor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
@@ -364,8 +381,12 @@ class IsaacVisual:
             raise RuntimeError(f"Isaac returned an invalid camera frame: {rgba.shape}")
         return np.ascontiguousarray(rgba[:, :, :3]), captured
 
-    def render(self, data, *, warming_up=False, background=None):
+    def render(self, data, *, warming_up=False):
         started = time.perf_counter()
+        if self.background is not None:
+            self.sequence += 1
+            camera_id = self.puppet.camera_id
+            self.background.submit(self.sequence, data.cam_xpos[camera_id], data.cam_xmat[camera_id])
         with Sdf.ChangeBlock():
             self.puppet.update(data)
             if self.scene is not None:
@@ -388,7 +409,7 @@ class IsaacVisual:
                 visible_ids = [int(key) for key, path in segmentation["info"]["idToLabels"].items()
                                if path.startswith(("/Robot/", "/Task/grail_object/"))]
                 mesh_visible = np.isin(ids, visible_ids)
-                rgb = np.where(mesh_visible[..., None], rgb, background())
+                rgb = np.where(mesh_visible[..., None], rgb, self.background.receive(self.sequence))
         if self.puppet.output_to_capture is not None:
             import cv2
 
@@ -401,9 +422,13 @@ class IsaacVisual:
         return rgb
 
     def close(self):
-        # Isaac 5.0 attach accepts HydraTexture objects; detach expects USD paths.
-        if self.ids is not None:
-            self.ids.detach([self.product_path])
-        self.rgb.detach([self.product_path])
-        if self.product is not None:
-            self.product.destroy()
+        try:
+            if self.background is not None:
+                self.background.close()
+        finally:
+            # Isaac 5.0 attach accepts HydraTexture objects; detach expects USD paths.
+            if self.ids is not None:
+                self.ids.detach([self.product_path])
+            self.rgb.detach([self.product_path])
+            if self.product is not None:
+                self.product.destroy()

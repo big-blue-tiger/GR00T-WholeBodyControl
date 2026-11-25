@@ -34,7 +34,9 @@ python -m gear_sonic.scripts.grail_offline collect \
 
 ## 2. 渲染图像
 
-Isaac Sim 根据每条轨迹引用的场景配置读取对应的物体 USD。默认资产位于 `gear_sonic/data/grail/100obj/object_usd/`。
+Isaac Sim 根据每条轨迹引用的场景读取物体 USD，默认位于 `gear_sonic/data/grail/100obj/object_usd/`。默认红桶场景与 GR00T 在线推理共用分层 3DGS 渲染。每帧用轨迹中同一时刻的头部相机位姿并行渲染 NuRec 背景与机器人、任务物体前景，再合成 640×480 的 `ego_view`。桌面深度网格遮挡前景，桌面颜色来自 NuRec 背景。
+
+默认场景的 `gear_sonic/data/scene/deploy/` 需要同时包含 `scene_combined_3dgs.usda`、`splats.nurec` 和 `scene_combined.usda`。使用该扫描场景的旧轨迹可以直接重新渲染，已有渲染目录可用 `--resume` 更新。采集时可在场景配置里设 `show_colliders: true`，让回放使用单次混合渲染显示对齐网格。
 
 ```bash
 python -m gear_sonic.scripts.grail_offline render \
@@ -44,9 +46,9 @@ python -m gear_sonic.scripts.grail_offline render \
 
 | 参数 | 说明 |
 |---|---|
-| `--traces` / `--output` | 轨迹目录和渲染输出目录。每条轨迹生成 `ego_view.mp4` |
-| `--render-envs` / `--encode-workers` | Isaac 渲染进程并发上限和视频编码进程数，默认 `1` 和 `4` |
-| `--resume` | 跳过轨迹和配置匹配的完整结果，继续渲染其余轨迹 |
+| `--traces` / `--output` | 轨迹目录和渲染输出目录。每条轨迹生成 50 fps 的 `ego_view.mp4` |
+| `--render-envs` / `--encode-workers` | 回放任务并发上限和视频编码进程数，默认 `1` 和 `4`。启用分层渲染时，每个回放任务使用两个 Isaac 进程 |
+| `--resume` | 跳过轨迹、渲染配置和渲染实现匹配的完整结果，继续渲染其余轨迹 |
 | `--overwrite` | 覆盖已有渲染结果，与 `--resume` 互斥 |
 
 ## 3. 标注与导出
@@ -80,7 +82,7 @@ python -m gear_sonic.scripts.grail_offline export \
 
 ## 导出 GR00T 在线回合
 
-[GR00T 红桶任务](grail_carry.md#gr00t-红桶任务)在运行中保存每个控制步的 Isaac 第一人称画面与实际执行的动作。每次运行目录中的 `traces/` 含状态、动作和回合标签，`renders/` 含 50 fps MP4 和帧索引。仿真进程退出后，启动脚本将已完成的成功和失败回合统一导出为 LeRobot v2.1，保存到 `dataset/`。每条动作对应一帧与一个状态转移，25 秒完整回合有 1,250 条动作和 1,251 个状态边界。
+[GR00T 红桶任务](grail_carry.md#gr00t-红桶任务)的同步和异步模式都会保存每个控制步的第一人称合成画面与实际执行的动作。每次运行目录中的 `traces/` 含状态、动作和回合标签，`renders/` 含 50 fps MP4 和帧索引。仿真进程退出后，启动脚本将已完成的成功和失败回合统一导出为 LeRobot v2.1，保存到 `dataset/`。每条动作对应一帧与一个状态转移，25 秒完整回合有 1,250 条动作和 1,251 个状态边界。
 
 旧运行可以在 `gr00t-sim` 环境中补导。将 `RUN_DIR` 指向运行目录，再执行以下命令。
 
@@ -98,11 +100,22 @@ python -m gear_sonic.scripts.grail_offline export \
 
 ```bash
 python -m gear_sonic.scripts.score_grail_rollouts \
-  --traces "$RUN_DIR/traces" \
-  --output outputs/gr00t_reward_value_scores
+  --traces "outputs/gr00t_rollouts/20261124_184257-6603/traces" \
+  --output outputs/gr00t_rollouts/20261124_184257-6603/gr00t_reward_value_scores
 ```
 
 通过重复传入 `--episode` 可只评分指定回合。输入需要 `episode.json`、`trace.npz` 及引用的 `scene.json`、`model.mjb`。`trace.npz` 必须含 `command_q`、`command_dq`、`command_kp`、`command_kd` 和 `command_tau`。逐步分数以 NPZ 保存，`episodes.jsonl` 记录原始回合和分数文件的路径、评分权重、折扣系数及首次接管建议。
+
+用 `--batch` 将整个数据集的分数保存到以来源命名的子目录。
+
+```bash
+python -m gear_sonic.scripts.score_grail_rollouts \
+  --batch \
+  --traces outputs/throw_trash_into_bin \
+  --output outputs/gr00t_reward_value_scores
+```
+
+例如 `throw_trash_into_bin/episode_000000/trace.npz` 的分数保存为 `outputs/gr00t_reward_value_scores/throw_trash_into_bin/episode_000000.npz`。`--traces` 可接收多个目录。输出根目录中的 `episodes.jsonl` 先按输入目录顺序排列，再按原始回合编号升序排列。
 
 ## 校验渲染结果
 
@@ -112,7 +125,7 @@ python -m gear_sonic.scripts.validate_grail_render \
   --report outputs/throw_trash_into_bin_render/validation.json
 ```
 
-`--traces` 和 `--renders` 指定核对目录，`--report` 指定报告路径。
+`--traces` 和 `--renders` 指定核对目录，`--report` 指定报告路径。校验会解码合成录像，核对 640×480 分辨率、50 fps、逐帧时间戳以及帧索引与原始轨迹的对应关系。
 
 ## 测速
 
@@ -128,7 +141,7 @@ python -m gear_sonic.scripts.benchmark_grail_render \
   --episodes 3 --trials 1 --render-envs 3 --encode-workers 4
 ```
 
-采集测速使用 `collect` 的参数。渲染测速中，`--episodes` 指定每轮使用的轨迹数，`--trials` 指定重复次数，其他参数与 `render` 相同。使用新输出目录。
+采集测速使用 `collect` 的参数。渲染测速复用 `render` 的分层渲染和编码流程。`--episodes` 指定每轮使用的轨迹数，`--trials` 指定重复次数，其他参数与 `render` 相同。使用新输出目录。
 
 
 ```bash

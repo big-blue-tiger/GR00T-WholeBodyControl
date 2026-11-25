@@ -1,4 +1,4 @@
-"""Run the red-bin task with asynchronous GR00T inference and one Isaac capture per step."""
+"""Run the red-bin task with GR00T inference and one Isaac RGB frame per step."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +16,7 @@ from gear_sonic.utils.grail.offline_task import DEFAULT_TASK_TEMPLATE
 
 ROOT = Path(__file__).resolve().parents[2]
 INFERENCE_STEPS = 20
+SYNC_INFERENCE_STEPS = 10
 CHUNK_STEPS = 40
 HOLD_STEPS = 10
 # Indices in the offline simulator's COMMAND_NAMES, in the training export order.
@@ -90,7 +91,7 @@ def submit_observation(worker, socket, env, rgb):
     )
 
 
-def run_episode(env, visual, decoder, infer, encode, pending):
+def run_episode(env, visual, decoder, infer, encode, pending, *, synchronous=False):
     import numpy as np
 
     env.trace["observation_step"] = np.empty(env.steps, dtype=np.int32)
@@ -99,7 +100,10 @@ def run_episode(env, visual, decoder, infer, encode, pending):
     for key in ("q", "dq", "kp", "kd", "tau"):
         env.trace[f"command_{key}"] = np.empty((env.steps, 43), dtype=np.float32)
     chunk, source_step = None, 0
-    last_request = -INFERENCE_STEPS
+    request_interval = SYNC_INFERENCE_STEPS if synchronous else INFERENCE_STEPS
+    # Expire the sync chunk at the request boundary so physics waits for the next reply.
+    usable_steps = request_interval if synchronous else CHUNK_STEPS + HOLD_STEPS
+    last_request = -request_interval
     encoded = None
     for step in range(env.steps):
         started = time.monotonic()
@@ -115,8 +119,8 @@ def run_episode(env, visual, decoder, infer, encode, pending):
                     print(f"[GR00T] Discarded action chunk {episode_id}:{observed}", flush=True)
 
             offset = step - source_step
-            has_action = chunk is not None and offset < CHUNK_STEPS + HOLD_STEPS
-            if pending is None and (not has_action or step - last_request >= INFERENCE_STEPS):
+            has_action = chunk is not None and offset < usable_steps
+            if pending is None and (not has_action or step - last_request >= request_interval):
                 pending = infer(env, rgb)
                 last_request = step
             if has_action:
@@ -134,7 +138,8 @@ def run_episode(env, visual, decoder, infer, encode, pending):
         env.trace["chunk_index"][step] = index
         env.trace["held_action"][step] = offset >= CHUNK_STEPS
         encoded = encode(step, rgb)
-        time.sleep(max(0, 0.02 - (time.monotonic() - started)))
+        if not synchronous:
+            time.sleep(max(0, 0.02 - (time.monotonic() - started)))
 
     encoded.result()
     return pending
@@ -163,18 +168,22 @@ def collect(args, app):
     traces.mkdir(parents=True)
     atomic_json(traces / "scene.json", dict(task=args.task, policy="gr00t", objects=keys))
 
+    synchronous = args.inference_mode == "sync"
     with ExitStack() as stack:
         transport = stack.enter_context(zmq.Context())
         inference = stack.enter_context(ThreadPoolExecutor(max_workers=1))
         encoder = stack.enter_context(ThreadPoolExecutor(max_workers=1))
         client = inference.submit(policy_connection, transport, args.port).result()
         stack.callback(lambda: inference.submit(client.close).result())
-        preview = encoder.submit(preview_publisher, transport, args.preview_port).result()
-        stack.callback(lambda: encoder.submit(preview.close).result())
+        preview = None
+        if not synchronous:
+            preview = encoder.submit(preview_publisher, transport, args.preview_port).result()
+            stack.callback(lambda: encoder.submit(preview.close).result())
         decoder = Decoder(args.decoder_executable, args.decoder_model, args.output / "decoder.log")
         stack.callback(decoder.close)
         infer = partial(submit_observation, inference, client)
-        print(f"[GR00T] H.264 preview listening on {args.preview_port}", flush=True)
+        if preview is not None:
+            print(f"[GR00T] H.264 preview listening on {args.preview_port}", flush=True)
 
         visual, pending = None, None
         episode = 0
@@ -188,7 +197,9 @@ def collect(args, app):
             env = OfflineEnvironment(model, scene, initial, 0, traces, args.steps, scene_dir)
             source, _, background = scene_assets(scene_dir / "scene.json")
             if visual is None:
-                visual = IsaacVisual(app, model, args.output, background, source)
+                visual = IsaacVisual(
+                    app, model, args.output, background, source, model_path=scene_dir / "model.mjb",
+                )
                 stack.callback(visual.close)
             else:
                 visual.scene.set_object(model, source)
@@ -202,7 +213,7 @@ def collect(args, app):
                 started = time.monotonic()
                 try:
                     encode = partial(encoder.submit, video.write)
-                    pending = run_episode(env, visual, decoder, infer, encode, pending)
+                    pending = run_episode(env, visual, decoder, infer, encode, pending, synchronous=synchronous)
                     encoder.submit(video.finish, env.trace["sim_time"][:-1]).result()
                 finally:
                     encoder.submit(video.close).result()
@@ -246,12 +257,18 @@ def main():
     parser.add_argument("--task", default=DEFAULT_TASK_TEMPLATE)
     parser.add_argument("--port", type=int, default=5550)
     parser.add_argument("--preview-port", type=int, default=5555)
+    parser.add_argument(
+        "--inference-mode", choices=("async", "sync"), default="async",
+        help="Sync waits for a new chunk every 10 control steps and records locally without live preview",
+    )
     args = parser.parse_args()
     args.steps = round(args.duration * 50)
     if args.steps < 1 or abs(args.steps / 50 - args.duration) > 1e-9:
         parser.error("--duration must be a positive multiple of 0.02 seconds")
-    if args.episodes_per_object < 1 or args.port == args.preview_port:
-        parser.error("require positive episodes per object and distinct policy and preview ports")
+    if args.episodes_per_object < 1:
+        parser.error("--episodes-per-object must be positive")
+    if args.inference_mode == "async" and args.port == args.preview_port:
+        parser.error("policy and preview ports must be distinct in async mode")
     if args.cycle_objects and args.episodes_per_object != 1:
         parser.error("--cycle-objects requires one episode per object per pass")
     if not args.cycle_objects and args.object_key is None:

@@ -105,16 +105,26 @@ def replay(env, metadata, trace, scorer):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--traces", type=Path, nargs="+", required=True)
+    parser.add_argument(
+        "--traces", type=Path, nargs="+", required=True, help="One or more directories of recorded episodes"
+    )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--batch", action="store_true", help="Save scores under a source-named subdirectory even for one trace directory"
+    )
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--episode", type=int, action="append", help="Score only these source episode indices")
     args = parser.parse_args()
     jobs = defaultdict(list)
-    for root in args.traces:
+    targets = set()
+    for source_index, root in enumerate(args.traces):
+        root = root.resolve()
+        name = root.parent.name if root.name == "traces" else root.name
+        directory = args.output / name if args.batch or len(args.traces) > 1 else args.output
         for path in episodes(root):
             metadata = json.loads(path.read_text())
-            if args.episode and metadata["episode_index"] not in args.episode:
+            episode_index = metadata["episode_index"]
+            if args.episode and episode_index not in args.episode:
                 continue
             trace_path = path.with_name("trace.npz")
             with np.load(trace_path, allow_pickle=False) as archive:
@@ -123,33 +133,36 @@ def main():
                 parser.error(f"{trace_path} is missing recorded decoder commands: {', '.join(missing)}")
             scene = (path.parent / metadata["scene"]).resolve()
             model = (path.parent / metadata["model"]).resolve()
-            jobs[(root.resolve(), scene, model)].append(path)
+            target = directory / f"{path.parent.name}.npz"
+            if target in targets:
+                parser.error(f"multiple episodes would write to {target}")
+            targets.add(target)
+            jobs[(source_index, root, scene, model)].append((episode_index, path, target))
     if not jobs:
         parser.error("no matching episodes")
     args.output.mkdir(parents=True, exist_ok=True)
     scorer = CarryRewardValueScorer(args.checkpoint)
     print(f"[Score] {scorer.path} | gamma={scorer.gamma:g}", flush=True)
-    multiple = len(args.traces) > 1
+    completed = []
     with (args.output / "episodes.jsonl").open("x") as summaries:
-        episode_id = 0
-        for (root, scene_path, model_path), paths in jobs.items():
-            scene = json.loads(scene_path.read_text())
-            model = mujoco.MjModel.from_binary_path(str(model_path))
-            name = root.parent.name if root.name == "traces" else root.name
-            directory = args.output / name if multiple else args.output
-            directory.mkdir(parents=True, exist_ok=True)
-            for path in paths:
-                metadata, trace = load_episode(path)
-                env = OfflineEnvironment(model, scene, None, 0, root, metadata["transitions"], scene_path.parent)
-                result, decision = replay(env, metadata, trace, scorer)
-                target = directory / f"{path.parent.name}.npz"
-                np.savez_compressed(target, **result)
-                summary = dict(trace=str(path.resolve()), score=str(target.resolve()),
-                               checkpoint=str(scorer.path), gamma=scorer.gamma, recovery_decision=decision)
+        try:
+            for (source_index, root, scene_path, model_path), group in jobs.items():
+                scene = json.loads(scene_path.read_text())
+                model = mujoco.MjModel.from_binary_path(str(model_path))
+                for episode_index, path, target in group:
+                    metadata, trace = load_episode(path)
+                    env = OfflineEnvironment(model, scene, None, 0, root, metadata["transitions"], scene_path.parent)
+                    result, decision = replay(env, metadata, trace, scorer)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(target, **result)
+                    summary = dict(trace=str(path.resolve()), score=str(target.resolve()),
+                                   checkpoint=str(scorer.path), gamma=scorer.gamma, recovery_decision=decision)
+                    completed.append((source_index, episode_index, path, summary))
+                    print(f"[Score] {len(completed)}/{len(targets)} {target.relative_to(args.output)}", flush=True)
+        finally:
+            # Replay reuses models across episodes. The manifest follows source episode order.
+            for _, _, _, summary in sorted(completed, key=lambda row: row[:3]):
                 summaries.write(json.dumps(summary) + "\n")
-                summaries.flush()
-                episode_id += 1
-                print(f"[Score] {episode_id} {name}/{path.parent.name}", flush=True)
 
 
 if __name__ == "__main__":

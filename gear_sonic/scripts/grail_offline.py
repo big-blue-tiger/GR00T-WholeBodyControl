@@ -54,7 +54,7 @@ def parser():
     p.add_argument("--traces", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--render-envs", type=positive_int, default=1,
-                   help="manual concurrency limit: one isolated Isaac process per environment (default: 1)")
+                   help="concurrent replay jobs, each using two Isaac processes with layered rendering (default: 1)")
     p.add_argument("--encode-workers", type=positive_int, default=4)
     existing = p.add_mutually_exclusive_group()
     existing.add_argument("--overwrite", action="store_true", help="render all episodes again, replacing existing videos")

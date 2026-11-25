@@ -13,7 +13,18 @@ class BackgroundRenderError(RuntimeError):
     pass
 
 
-def _render_background(connection, pixels, model_path, scene_config, shape):
+def uses_layered_rendering(scene_config):
+    return bool(
+        scene_config and scene_config.get("enabled") and scene_config.get("occlusion_proxy")
+        and not scene_config.get("show_colliders")
+    )
+
+
+def occlusion_proxy_path(scene_config):
+    return Path(__file__).resolve().parents[3] / scene_config["occlusion_proxy"]["asset_path"]
+
+
+def _render_background(connection, pixels, model_path, scene_config, shape, model_loader):
     from .render_worker import create_camera_app
 
     sys.argv[:] = sys.argv[:1]
@@ -24,8 +35,12 @@ def _render_background(connection, pixels, model_path, scene_config, shape):
 
         from .isaac_visual import IsaacVisual
 
-        model = mujoco.MjModel.from_binary_path(model_path)
-        visual = IsaacVisual(app, model, Path(model_path).parent, scene_config, layer="background")
+        # Replay applies legacy camera calibration in both render processes.
+        model = (
+            mujoco.MjModel.from_binary_path(model_path)
+            if model_loader is None else model_loader(Path(model_path))
+        )
+        visual = IsaacVisual(app, model, Path(model_path).parent, scene_config, background_only=True)
         if (*visual.puppet.capture_size[::-1], 3) != shape:
             raise ValueError("Isaac background and foreground resolutions differ")
         target = np.frombuffer(pixels, dtype=np.uint8).reshape(shape)
@@ -52,14 +67,15 @@ def _render_background(connection, pixels, model_path, scene_config, shape):
 
 
 class BackgroundRenderer:
-    def __init__(self, model_path, scene_config, capture_size):
+    def __init__(self, model_path, scene_config, capture_size, *, model_loader=None):
         context = mp.get_context("spawn")
         shape = (*capture_size[::-1], 3)
         pixels = context.RawArray("B", int(np.prod(shape)))
         self.rgb = np.frombuffer(pixels, dtype=np.uint8).reshape(shape)
         self.connection, child = context.Pipe()
         self.process = context.Process(
-            target=_render_background, args=(child, pixels, model_path, scene_config, shape),
+            target=_render_background,
+            args=(child, pixels, str(model_path), scene_config, shape, model_loader),
             name="Isaac NuRec background",
         )
         try:
