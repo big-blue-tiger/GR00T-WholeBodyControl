@@ -1,5 +1,6 @@
 """GRAIL CarryRewardValue inference from live MuJoCo state and DDS joint targets."""
 
+from dataclasses import dataclass
 import time
 
 import mujoco
@@ -11,7 +12,6 @@ import yaml
 from .checkpoints import resolve_checkpoint
 from .observations import relative_pose, rotation, table_edge_line
 from .policy import load_checkpoint
-
 
 # Field order and widths from GRAIL's CarryObservation, independent of actor input.
 PROPRIO_FIELDS = (
@@ -32,6 +32,7 @@ OBSERVATION_FIELDS = (
 ACTION_FIELDS = (("joint_target", 43),)
 OBSERVATION_DIM = sum(size for _, size in OBSERVATION_FIELDS)
 REWARD_INPUT_DIM = OBSERVATION_DIM + ACTION_FIELDS[0][1]
+SCORE_FIELDS = ("reward", "value", "next_value", "td_advantage")
 
 
 def _prediction_head(input_dim):
@@ -48,10 +49,18 @@ class CarryRewardValue(nn.Module):
         self.value = _prediction_head(OBSERVATION_DIM)
 
 
-class CarryRewardValueMonitor:
-    """Score each live control interval using its last applied DDS position target."""
+@dataclass(frozen=True)
+class CarryScore:
+    reward: float
+    value: float
+    next_value: float
+    td_advantage: float
 
-    def __init__(self, checkpoint, env, observations, duration):
+
+class CarryRewardValueScorer:
+    """Load the two heads and share them across independent episode streams."""
+
+    def __init__(self, checkpoint):
         path = resolve_checkpoint(checkpoint)
         carry = load_checkpoint(path).get("carry_reward_value")
         if carry is None:
@@ -65,23 +74,32 @@ class CarryRewardValueMonitor:
             raise ValueError(f"Unsupported CarryRewardValue observation layout: {path}")
         config = yaml.safe_load(path.with_name("config.yaml").read_text())
         self.gamma = float(config["algo"]["config"]["gamma"])
-        self.duration, self.env, self.layout = duration, env, layout
+        self.path, self.layout = path, layout
         self.net = CarryRewardValue().eval()
         self.net.load_state_dict(carry["models"])
         torch.set_num_threads(1)
         self.default_pos = np.asarray(layout["default_joint_pos"], dtype=np.float32)
         self.default_vel = np.asarray(layout["default_joint_vel"], dtype=np.float32)
-        self.bind_scene(observations)
-        self.last_report = -float("inf")
-        print(f"[CarryRewardValue] Checkpoint {path} | gamma={self.gamma:g}", flush=True)
 
-    def bind_scene(self, observations):
-        env, layout = self.env, self.layout
-        self.model, self.data = env.mj_model, env.mj_data
+    def score(self, state, target, value, bootstrap):
+        reward_input = torch.cat((state, torch.from_numpy(target)))
+        reward = self.net.reward(reward_input).item()
+        return CarryScore(reward, value, bootstrap, reward + self.gamma * bootstrap - value)
+
+
+class CarryRewardValueStream:
+    """Pack state and score completed transitions at the 50 Hz boundary."""
+
+    def __init__(self, scorer, duration):
+        self.scorer, self.duration = scorer, duration
+        self.reset()
+
+    def bind(self, model, data, observations, command_qadr):
+        layout = self.scorer.layout
+        self.model, self.data = model, data
         self.observations = observations
         joints = np.array([self.model.joint(name).id for name in layout["joint_names"]])
         self.qadr, self.vadr = self.model.jnt_qposadr[joints], self.model.jnt_dofadr[joints]
-        command_qadr = np.r_[env.body_qpos_adr, env.left_hand_qpos_adr, env.right_hand_qpos_adr]
         command_index = {address: i for i, address in enumerate(command_qadr)}
         self.command_order = [command_index[address] for address in self.qadr]
         self.links = [self.model.body(name).id for name in layout["body_names"]]
@@ -96,10 +114,8 @@ class CarryRewardValueMonitor:
         self.history = self.state = self.value = self.target = None
         self.success = False
 
-    def capture_target(self):
-        # Read under the same DDS locks as the torque calculation for this substep.
-        command = np.r_[self.env.compute_body_qpos(), self.env.compute_hand_qpos()]
-        self.target = command[self.command_order].astype(np.float32)
+    def set_target(self, command):
+        self.target = np.asarray(command, dtype=np.float32)[self.command_order]
 
     def robot_table_contact(self):
         obs, data, model = self.observations, self.data, self.model
@@ -131,9 +147,9 @@ class CarryRewardValueMonitor:
         table_pos, table_rot = data.xpos[obs.table], data.xmat[obs.table].reshape(3, 3)
         root_velocity, obj_velocity = self.velocity(obs.pelvis), self.velocity(obs.obj)
         frame = np.concatenate((
-            data.qpos[self.qadr] - self.default_pos, data.qvel[self.vadr] - self.default_vel,
+            data.qpos[self.qadr] - self.scorer.default_pos, data.qvel[self.vadr] - self.scorer.default_vel,
             -pelvis_rot.T[:, 2], pelvis_rot.T @ root_velocity[:3], pelvis_rot.T @ root_velocity[3:],
-            self.default_pos if self.target is None else self.target,
+            self.scorer.default_pos if self.target is None else self.target,
         )).astype(np.float32)
         if self.history is None:
             self.history = np.tile(frame, (HISTORY_LENGTH, 1))
@@ -171,28 +187,52 @@ class CarryRewardValueMonitor:
         return torch.from_numpy(features)
 
     @torch.inference_mode()
-    def sample(self, episode, step, task, contacts):
+    def advance(self, task, contacts, *, timeout=False):
         state = self.observe(task, contacts)
-        value = self.net.value(state).item()
-        if self.state is not None and self.target is not None:
-            self.report(episode, step, value)
+        value = self.scorer.net.value(state).item()
+        score = self.finish(self.value if timeout else value)
         self.state, self.value = state, value
+        return score
 
     @torch.inference_mode()
-    def finish(self, episode, step, *, timeout):
+    def finish(self, bootstrap):
         if self.state is not None and self.target is not None:
-            # Match GRAIL's PPO timeout correction. A fall is terminal.
-            self.report(episode, step, self.value if timeout else 0.0)
+            return self.scorer.score(self.state, self.target, self.value, bootstrap)
 
-    def report(self, episode, step, bootstrap):
-        reward_input = torch.cat((self.state, torch.from_numpy(self.target)))
-        reward = self.net.reward(reward_input).item()
-        advantage = reward + self.gamma * bootstrap - self.value
+
+class CarryRewardValueMonitor(CarryRewardValueStream):
+    """Score each live control interval using its last applied DDS position target."""
+
+    def __init__(self, checkpoint, env, observations, duration):
+        scorer = CarryRewardValueScorer(checkpoint)
+        super().__init__(scorer, duration)
+        self.env = env
+        self.bind_scene(observations)
+        self.last_report = -float("inf")
+        print(f"[CarryRewardValue] Checkpoint {scorer.path} | gamma={scorer.gamma:g}", flush=True)
+
+    def bind_scene(self, observations):
+        env = self.env
+        self.bind(env.mj_model, env.mj_data, observations,
+                  np.r_[env.body_qpos_adr, env.left_hand_qpos_adr, env.right_hand_qpos_adr])
+
+    def capture_target(self):
+        # Read under the same DDS locks as the torque calculation for this substep.
+        self.set_target(np.r_[self.env.compute_body_qpos(), self.env.compute_hand_qpos()])
+
+    def sample(self, episode, step, task, contacts):
+        self.report(episode, step, self.advance(task, contacts))
+
+    def finish_episode(self, episode, step, *, timeout):
+        # Match GRAIL's PPO timeout correction. A fall is terminal.
+        self.report(episode, step, self.finish(self.value if timeout else 0.0))
+
+    def report(self, episode, step, score):
         now = time.monotonic()
-        if now - self.last_report >= 0.1:
+        if score is not None and now - self.last_report >= 0.1:
             print(
                 f"[CarryRewardValue | Episode {episode} | Step {step}] "
-                f"Reward: {reward:.9g} | Value: {self.value:.9g} | TD Advantage: {advantage:.9g}",
+                f"Reward: {score.reward:.9g} | Value: {score.value:.9g} | TD Advantage: {score.td_advantage:.9g}",
                 flush=True,
             )
             self.last_report = now

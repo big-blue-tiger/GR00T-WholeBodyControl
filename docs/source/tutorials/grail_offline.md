@@ -80,15 +80,29 @@ python -m gear_sonic.scripts.grail_offline export \
 
 ## 导出 GR00T 在线回合
 
-[GR00T 红桶任务](grail_carry.md#gr00t-红桶任务)在运行中保存每个控制步的 Isaac 第一人称画面与实际执行的动作。每次运行目录中的 `traces/` 含状态、动作和回合标签，`renders/` 含 50 fps MP4 和帧索引，`dataset/` 自动将完整的成功和失败回合导出为 LeRobot v2.1。每条动作对应一帧与一个状态转移，25 秒完整回合有 1,250 条动作和 1,251 个状态边界。
+[GR00T 红桶任务](grail_carry.md#gr00t-红桶任务)在运行中保存每个控制步的 Isaac 第一人称画面与实际执行的动作。每次运行目录中的 `traces/` 含状态、动作和回合标签，`renders/` 含 50 fps MP4 和帧索引。仿真进程退出后，启动脚本将已完成的成功和失败回合统一导出为 LeRobot v2.1，保存到 `dataset/`。每条动作对应一帧与一个状态转移，25 秒完整回合有 1,250 条动作和 1,251 个状态边界。
 
-将 `RUN_DIR` 指向本次运行目录，即可从已有轨迹和视频重新导出。例如，将成功回合写入新的目录。
+旧运行可以在 `gr00t-sim` 环境中补导。将 `RUN_DIR` 指向运行目录，再执行以下命令。
 
 ```bash
 python -m gear_sonic.scripts.grail_offline export \
   --traces "$RUN_DIR/traces" --renders "$RUN_DIR/renders" \
-  --output "$RUN_DIR/dataset_success" --labels success
+  --output "$RUN_DIR/dataset" --labels all
 ```
+
+只需成功回合时，使用 `--labels success`，并把 `--output` 指向新目录，例如 `"$RUN_DIR/dataset_success"`。
+
+## 离线评估接管时刻
+
+评分读取原始回合中的状态边界、场景、任务和实际执行的关节命令。LeRobot 导出数据的 `meta/source_episodes.json` 将训练集索引映射回原始回合。TD Advantage 的 1 秒滑动均值连续 5 步小于等于 `-0.35` 时记录接管建议。任务计划发出释放请求，或物体首次进入释放目标 0.2 米内后，停止生成新的建议。
+
+```bash
+python -m gear_sonic.scripts.score_grail_rollouts \
+  --traces "$RUN_DIR/traces" \
+  --output outputs/gr00t_reward_value_scores
+```
+
+通过重复传入 `--episode` 可只评分指定回合。输入需要 `episode.json`、`trace.npz` 及引用的 `scene.json`、`model.mjb`。`trace.npz` 必须含 `command_q`、`command_dq`、`command_kp`、`command_kd` 和 `command_tau`。逐步分数以 NPZ 保存，`episodes.jsonl` 记录原始回合和分数文件的路径、评分权重、折扣系数及首次接管建议。
 
 ## 校验渲染结果
 

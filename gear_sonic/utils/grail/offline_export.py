@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import mujoco
 import numpy as np
@@ -11,6 +12,22 @@ from .offline_sim import BODY_NAMES, HAND_NAMES, joint_addresses
 
 
 def export(args):
+    selected = select_episodes(args.traces, args.labels)
+    if not selected:
+        raise ValueError(f"no episodes match labels={args.labels}")
+    if args.output.exists():
+        raise FileExistsError(f"use a new dataset output directory: {args.output}")
+
+    # Publish the dataset only after all episodes and training statistics are ready.
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".lerobot-", dir=args.output.parent) as temporary:
+        dataset = Path(temporary) / "dataset"
+        _export_episodes(args.traces, args.renders, dataset, selected)
+        dataset.rename(args.output)
+    print(f"[Export] {len(selected)} episodes -> {args.output}", flush=True)
+
+
+def _export_episodes(traces, renders, output, selected):
     from gear_sonic.data.exporter import Gr00tDataExporter
     from gear_sonic.data.features_sonic_vla import (
         get_features_sonic_vla,
@@ -19,11 +36,6 @@ def export(args):
     )
     from gear_sonic.utils.data_collection.transforms import compute_projected_gravity
 
-    selected = select_episodes(args.traces, args.labels)
-    if not selected:
-        raise ValueError(f"no episodes match labels={args.labels}")
-    if args.output.exists():
-        raise FileExistsError(f"use a new dataset output directory: {args.output}")
     robot = get_g1_robot_model()
     full_features = get_features_sonic_vla(robot)
     keys = ("observation.images.ego_view", "observation.state", "observation.projected_gravity",
@@ -45,9 +57,9 @@ def export(args):
                    for key in ("motion_token", "left_hand_joints", "right_hand_joints")},
         "video": full_modality["video"], "annotation": full_modality["annotation"],
     }
-    scene = json.loads((args.traces / "scene.json").read_text())
+    scene = json.loads((traces / "scene.json").read_text())
     exporter = Gr00tDataExporter.create(
-        save_root=args.output, fps=50, features=features, modality_config=modality,
+        save_root=output, fps=50, features=features, modality_config=modality,
         task=scene["task"], script_config=scene, robot_type="unitree_g1_sonic", preencoded_videos=True,
     )
     model_path = None
@@ -60,7 +72,7 @@ def export(args):
             qadr, _ = joint_addresses(model, BODY_NAMES + HAND_NAMES)
             model_path = episode_model
         n = meta["transitions"]
-        rendered = args.renders / path.parent.name
+        rendered = renders / path.parent.name
         info = json.loads((rendered / "render.json").read_text())
         with np.load(rendered / "frames.npz", allow_pickle=False) as frames:
             if not np.array_equal(frames["frame_index"], np.arange(n)) or not np.array_equal(
@@ -97,9 +109,8 @@ def export(args):
         if "object_key" in meta:
             entry["object_key"] = meta["object_key"]
         mapping.append(entry)
-    (args.output / "meta" / "source_episodes.json").write_text(json.dumps(mapping, indent=2))
-    write_gr00t_stats(args.output)
-    print(f"[Export] {len(mapping)} episodes -> {args.output}", flush=True)
+    (output / "meta" / "source_episodes.json").write_text(json.dumps(mapping, indent=2))
+    write_gr00t_stats(output)
 
 
 def write_gr00t_stats(root):

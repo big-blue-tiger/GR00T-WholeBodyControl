@@ -28,13 +28,46 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
   if [[ -n ${GRAIL_CACHE_DIR:-} ]]; then
     cache_args=(--cache-dir "$GRAIL_CACHE_DIR")
   fi
-  status=0
-  "$SIM_PYTHON" -u -m gear_sonic.scripts.run_gr00t_rollout \
-    --dataset-dir "${DATASET_DIR:-gear_sonic/data/grail/100obj}" \
-    --initial-pose "${INITIAL_POSE:-gear_sonic/config/grail/carry_initial_pose.json}" \
-    --seed "${GRAIL_SEED:-42}" "${object_args[@]}" "${cache_args[@]}" \
-    "$@" --output "$output" --model-dir "$MODEL_DIR" --port "$GR00T_PORT" || status=$?
-  if compgen -G "$output/traces/episode_*/episode.json" >/dev/null; then
+  rollout_pid=
+  stopping=0
+  stop_rollout() {
+    wait_interrupted=1
+    if (( ! stopping )); then
+      stopping=1
+      if [[ -n $rollout_pid ]]; then
+        kill -TERM "$rollout_pid" 2>/dev/null || true
+      fi
+    fi
+  }
+  trap stop_rollout INT TERM
+
+  (
+    # The launcher handles terminal Ctrl+C and forwards a single stop signal.
+    trap '' INT
+    exec "$SIM_PYTHON" -u -m gear_sonic.scripts.run_gr00t_rollout \
+      --dataset-dir "${DATASET_DIR:-gear_sonic/data/grail/100obj}" \
+      --initial-pose "${INITIAL_POSE:-gear_sonic/config/grail/carry_initial_pose.json}" \
+      --seed "${GRAIL_SEED:-42}" "${object_args[@]}" "${cache_args[@]}" \
+      "$@" --output "$output" --model-dir "$MODEL_DIR" --port "$GR00T_PORT"
+  ) &
+  rollout_pid=$!
+  if (( stopping )); then
+    kill -TERM "$rollout_pid" 2>/dev/null || true
+  fi
+
+  # A signal interrupts Bash's wait before the rollout has finished shutting down.
+  wait_interrupted=1
+  while (( wait_interrupted )); do
+    wait_interrupted=0
+    status=0
+    wait "$rollout_pid" || status=$?
+  done
+  trap - INT TERM
+
+  shopt -s nullglob
+  completed_episodes=("$output"/traces/episode_*/episode.json)
+  if (( ${#completed_episodes[@]} )); then
+    printf 'Exporting completed episodes to %s\n' "$output/dataset"
     "$SIM_PYTHON" -u -m gear_sonic.scripts.grail_offline export \
       --traces "$output/traces" --renders "$output/renders" --output "$output/dataset" --labels all
   fi

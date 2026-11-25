@@ -135,9 +135,15 @@ class OfflineEnvironment:
             self.trace["expert_action"][i] = expert
             self.trace["decoder_observation"][i] = reply["observation"]
             self.trace["decoder_action"][i] = reply["raw_action"]
+            self.observations.last_action[:] = expert
+        if "command_q" in self.trace:
             for key, values in command.items():
                 self.trace[f"command_{key}"][i] = values
-            self.observations.last_action[:] = expert
+        self.advance_physics(command)
+        self.update_task()
+        self.snapshot()
+
+    def advance_physics(self, command, *, forward=True):
         start = time.perf_counter()
         for _ in range(4):
             substep = time.perf_counter()
@@ -152,17 +158,21 @@ class OfflineEnvironment:
             mujoco.mj_step(self.model, self.data)
             self.timing["mj_step_s"] += time.perf_counter() - integrated
         self.timing["physics_s"] += time.perf_counter() - start
-        start = time.perf_counter()
-        mujoco.mj_forward(self.model, self.data)
-        self.timing["forward_s"] += time.perf_counter() - start
+        if forward:
+            start = time.perf_counter()
+            mujoco.mj_forward(self.model, self.data)
+            self.timing["forward_s"] += time.perf_counter() - start
         self.step_index += 1
         if abs(self.data.time - self.step_index / 50) > 1e-8:
             raise RuntimeError("MuJoCo time reset during the trajectory; episode was not saved")
+
+    def update_task(self):
         start = time.perf_counter()
-        forces, table = self.observations.contacts(self.data)
-        self.task.update(self.step_index, forces.sum(), table)
+        contacts = self.observations.contact_forces(self.data)
+        forces, table = contacts
+        self.task.update(self.step_index, np.linalg.norm(forces, axis=1).sum(), np.linalg.norm(table))
         self.timing["task_contact_s"] += time.perf_counter() - start
-        self.snapshot()
+        return contacts
 
     def save(self):
         start = time.perf_counter()
@@ -182,7 +192,9 @@ class OfflineEnvironment:
             task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
             **result,
         )
-        (directory / "episode.json").write_text(json.dumps(metadata, indent=2))
+        pending_metadata = directory / "episode.json.tmp"
+        pending_metadata.write_text(json.dumps(metadata, indent=2))
+        pending_metadata.replace(directory / "episode.json")
         self.timing["write_s"] += time.perf_counter() - start
         self.trace = None
         return directory

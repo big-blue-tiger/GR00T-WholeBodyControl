@@ -79,6 +79,8 @@ python -m gear_sonic.scripts.run_camera_viewer \
 
 **Q** 关闭本地查看器。启动终端按 **Ctrl+C** 结束采集，已完成的回合会自动导出到本次运行目录的 `dataset/`。[输出和手动导出](grail_offline.md#导出-gr00t-在线回合)
 
+采集完成后，可使用保存的状态和关节命令进行 [TD Advantage 离线评分](grail_offline.md#离线评估接管时刻)。
+
 ## 抓握失败恢复测试
 
 ```bash

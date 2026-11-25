@@ -96,6 +96,8 @@ def run_episode(env, visual, decoder, infer, encode, pending):
     env.trace["observation_step"] = np.empty(env.steps, dtype=np.int32)
     env.trace["chunk_index"] = np.empty(env.steps, dtype=np.int32)
     env.trace["held_action"] = np.empty(env.steps, dtype=bool)
+    for key in ("q", "dq", "kp", "kd", "tau"):
+        env.trace[f"command_{key}"] = np.empty((env.steps, 43), dtype=np.float32)
     chunk, source_step = None, 0
     last_request = -INFERENCE_STEPS
     encoded = None
@@ -143,9 +145,9 @@ def collect(args, app):
 
     from gear_sonic.utils.grail.assets import prepared_object_keys
     from gear_sonic.utils.grail.gr00t_video import EpisodeVideo
-    from gear_sonic.utils.grail.offline_collect import collection_objects, Decoder, prepare_scene
+    from gear_sonic.utils.grail.offline_collect import Decoder, collection_objects, prepare_scene
     from gear_sonic.utils.grail.offline_render import scene_assets
-    from gear_sonic.utils.grail.offline_sim import load_environment_scene, OfflineEnvironment
+    from gear_sonic.utils.grail.offline_sim import OfflineEnvironment, load_environment_scene
     from gear_sonic.utils.grail.render_pipeline import atomic_json
     from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
 

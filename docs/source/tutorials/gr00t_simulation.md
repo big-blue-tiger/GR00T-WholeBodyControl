@@ -70,4 +70,10 @@ python -m gear_sonic.scripts.run_camera_viewer \
   --h264 --camera-host 127.0.0.1 --camera-port 15555
 ```
 
-按 **Q** 关闭查看器。仿真终端按 **Ctrl+C** 停止轮换，已完成的回合会自动导出为 LeRobot v2.1，保存在服务器仓库的 `outputs/gr00t_rollouts/<运行目录>/dataset/`。同一份 H.264 编码用于预览和 50 fps 录像。[输出与手动导出](grail_offline.md#导出-gr00t-在线回合)
+按 **Q** 关闭查看器。
+
+## 5. 导出录制数据
+
+仿真期间写入原始轨迹和 50 fps H.264 录像，预览复用同一份视频编码。在仿真终端按 **Ctrl+C** 停止轮换。启动脚本会等仿真进程退出，再用 GRAIL 的离线导出器将已完成的成功和失败回合写成 LeRobot v2.1。
+
+终端显示 `[Export] ... episodes -> .../dataset` 后，使用服务器仓库中的 `outputs/gr00t_rollouts/<运行目录>/dataset/`。其中 `data/`、`videos/` 和 `meta/` 的结构、字段和模态与 GRAIL 红桶数据集一致。旧运行可从原始轨迹和录像补导。[输出与手动导出](grail_offline.md#导出-gr00t-在线回合)

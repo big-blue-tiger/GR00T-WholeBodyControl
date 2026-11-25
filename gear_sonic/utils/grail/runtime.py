@@ -1,9 +1,9 @@
 """Simulation-side task, episode, actor IPC and existing C++ v4 bridge."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 
 import msgpack
 import mujoco
@@ -12,12 +12,11 @@ import zmq
 
 from gear_sonic.utils.teleop.zmq.zmq_planner_sender import pack_pose_message
 
+from .episode import load_initial_pose, reset_scene
 from .observations import Observations
 from .plan import CarryPlannerConfig
-from .episode import load_initial_pose, reset_scene
 from .task import CarryTask
 from .transport import pack, socket, unpack
-
 
 EPISODE_DURATION = 25.0
 RECOVERY_DURATION = 5.0
@@ -319,7 +318,7 @@ class GrailRuntime:
             return False
         if self.data.time + 1e-9 >= self.duration:
             if self.reward_value is not None:
-                self.reward_value.finish(self.episode, self.step_count + 1, timeout=True)
+                self.reward_value.finish_episode(self.episode, self.step_count + 1, timeout=True)
             self.event("episode_end", task_events=self.task.events)
             self.reset()
             return False
