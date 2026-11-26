@@ -4,10 +4,12 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
-from itertools import cycle
+from itertools import count, groupby
+import json
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -19,6 +21,7 @@ INFERENCE_STEPS = 20
 SYNC_INFERENCE_STEPS = 10
 CHUNK_STEPS = 40
 HOLD_STEPS = 10
+PARALLEL_CYCLE_EPISODE_LIMIT = 500
 # Indices in the offline simulator's COMMAND_NAMES, in the training export order.
 # Kit and Pinocchio load incompatible native dependencies in the same process.
 STATE_GROUPS = {
@@ -91,7 +94,7 @@ def submit_observation(worker, socket, env, rgb):
     )
 
 
-def run_episode(env, visual, decoder, infer, encode, pending, *, synchronous=False):
+def run_episode(env, visual, decoder, infer, encode, pending, *, synchronous=False, check_stop=None):
     import numpy as np
 
     env.trace["observation_step"] = np.empty(env.steps, dtype=np.int32)
@@ -106,6 +109,8 @@ def run_episode(env, visual, decoder, infer, encode, pending, *, synchronous=Fal
     last_request = -request_interval
     encoded = None
     for step in range(env.steps):
+        if check_stop is not None:
+            check_stop()
         started = time.monotonic()
         rgb = visual.render(env.data)
         while True:
@@ -145,16 +150,10 @@ def run_episode(env, visual, decoder, infer, encode, pending, *, synchronous=Fal
     return pending
 
 
-def collect(args, app):
-    import zmq
-
+def prepare_run(args):
     from gear_sonic.utils.grail.assets import prepared_object_keys
-    from gear_sonic.utils.grail.gr00t_video import EpisodeVideo
-    from gear_sonic.utils.grail.offline_collect import Decoder, collection_objects, prepare_scene
-    from gear_sonic.utils.grail.offline_render import scene_assets
-    from gear_sonic.utils.grail.offline_sim import OfflineEnvironment, load_environment_scene
+    from gear_sonic.utils.grail.offline_collect import collection_objects
     from gear_sonic.utils.grail.render_pipeline import atomic_json
-    from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
 
     if args.cycle_objects and not args.object_key:
         keys = prepared_object_keys(args.dataset_dir, args.cache_dir)
@@ -163,11 +162,40 @@ def collect(args, app):
     if args.cycle_objects and len(keys) < 2:
         raise ValueError(f"--cycle-objects requires at least two distinct prepared objects in {args.dataset_dir}")
 
-    object_order = cycle(keys) if args.cycle_objects else keys
-    traces, renders = args.output / "traces", args.output / "renders"
+    traces = args.output / "traces"
     traces.mkdir(parents=True)
     atomic_json(traces / "scene.json", dict(task=args.task, policy="gr00t", objects=keys))
+    return keys
 
+
+def assigned_object_runs(args, keys, worker_index):
+    if args.cycle_objects and args.num_envs == 1:
+        episodes = count(worker_index, args.num_envs)
+    else:
+        episode_count = (
+            PARALLEL_CYCLE_EPISODE_LIMIT if args.cycle_objects else len(keys) * args.episodes_per_object
+        )
+        episodes = range(worker_index, episode_count, args.num_envs)
+    for object_index, run in groupby(episodes, key=lambda episode: episode // args.episodes_per_object):
+        yield keys[object_index % len(keys)], run
+
+
+def collect(args, app, keys, check_stop):
+    import zmq
+
+    from gear_sonic.utils.grail.gr00t_video import EpisodeVideo
+    from gear_sonic.utils.grail.offline_collect import Decoder, prepare_scene
+    from gear_sonic.utils.grail.offline_render import scene_assets
+    from gear_sonic.utils.grail.offline_sim import OfflineEnvironment, load_environment_scene
+    from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
+
+    traces, renders = args.output / "traces", args.output / "renders"
+    worker_index = args.worker_index or 0
+    work_dir, objects_dir = args.output, traces / "objects"
+    if args.worker_index is not None:
+        work_dir = args.output / "workers" / str(worker_index)
+        work_dir.mkdir(parents=True)
+        objects_dir = work_dir / "objects"
     synchronous = args.inference_mode == "sync"
     with ExitStack() as stack:
         transport = stack.enter_context(zmq.Context())
@@ -179,32 +207,42 @@ def collect(args, app):
         if not synchronous:
             preview = encoder.submit(preview_publisher, transport, args.preview_port).result()
             stack.callback(lambda: encoder.submit(preview.close).result())
-        decoder = Decoder(args.decoder_executable, args.decoder_model, args.output / "decoder.log")
+        decoder = Decoder(args.decoder_executable, args.decoder_model, work_dir / "decoder.log")
         stack.callback(decoder.close)
         infer = partial(submit_observation, inference, client)
         if preview is not None:
             print(f"[GR00T] H.264 preview listening on {args.preview_port}", flush=True)
 
         visual, pending = None, None
-        episode = 0
         prepared = set()
-        for key in object_order:
-            scene_dir = traces / "objects" / key
+        for key, episodes in assigned_object_runs(args, keys, worker_index):
+            check_stop()
+            scene_dir = objects_dir / key
             if key not in prepared:
                 prepare_scene(args, scene_dir, key)
                 prepared.add(key)
             model, scene, initial = load_environment_scene(scene_dir)
-            env = OfflineEnvironment(model, scene, initial, 0, traces, args.steps, scene_dir)
+            env = OfflineEnvironment(
+                model, scene, initial, worker_index, traces, args.steps, scene_dir,
+                release_by_distance=False,
+            )
             source, _, background = scene_assets(scene_dir / "scene.json")
             if visual is None:
                 visual = IsaacVisual(
-                    app, model, args.output, background, source, model_path=scene_dir / "model.mjb",
+                    app, model, work_dir, background, source, model_path=scene_dir / "model.mjb",
                 )
                 stack.callback(visual.close)
+                if args.worker_index is not None:
+                    (work_dir / "ready").touch()
+                    print(f"[GR00T] Worker {worker_index} ready", flush=True)
+                    while not (work_dir.parent / "start").exists():
+                        check_stop()
+                        time.sleep(0.1)
             else:
                 visual.scene.set_object(model, source)
 
-            for _ in range(args.episodes_per_object):
+            for episode in episodes:
+                check_stop()
                 env.start_episode(episode, args.seed + episode)
                 print(f"[GR00T] Episode {episode} · {key} · {env.task_description}", flush=True)
                 video = encoder.submit(
@@ -213,15 +251,122 @@ def collect(args, app):
                 started = time.monotonic()
                 try:
                     encode = partial(encoder.submit, video.write)
-                    pending = run_episode(env, visual, decoder, infer, encode, pending, synchronous=synchronous)
+                    pending = run_episode(
+                        env, visual, decoder, infer, encode, pending,
+                        synchronous=synchronous, check_stop=check_stop,
+                    )
                     encoder.submit(video.finish, env.trace["sim_time"][:-1]).result()
                 finally:
                     encoder.submit(video.close).result()
                 path = env.save()
                 rate = args.steps / (time.monotonic() - started)
                 print(f"[GR00T] Saved {path} at {rate:.1f} control steps per wall second", flush=True)
-                episode += 1
         decoder([])
+
+
+def run_workers(command, num_workers, output):
+    workers = []
+    stopping = False
+    failed = False
+
+    def stop(*_):
+        nonlocal stopping
+        stopping = True
+
+    with ExitStack() as signals:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous = signal.signal(signum, stop)
+            signals.callback(signal.signal, signum, previous)
+        try:
+            workers_dir = output / "workers"
+            for index in range(num_workers):
+                if stopping:
+                    break
+                print(f"[GR00T] Warming up worker {index + 1}/{num_workers}", flush=True)
+                workers.append(subprocess.Popen(
+                    [*command, "--worker-index", str(index)], start_new_session=True,
+                ))
+                ready = workers_dir / str(index) / "ready"
+                deadline = time.monotonic() + 360
+                while not stopping and not ready.exists():
+                    if any(worker.poll() is not None for worker in workers):
+                        raise RuntimeError(f"GR00T worker exited before all cameras were ready ({index=})")
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"GR00T worker {index} camera startup timed out")
+                    time.sleep(0.1)
+            if not stopping:
+                (workers_dir / "start").touch()
+            while not stopping:
+                statuses = [worker.poll() for worker in workers]
+                if None not in statuses or any(status not in (None, 0) for status in statuses):
+                    break
+                time.sleep(0.1)
+        finally:
+            terminating = [worker for worker in workers if worker.poll() is None]
+            for worker in terminating:
+                worker.terminate()
+            deadline = time.monotonic() + 30
+            for index, worker in enumerate(workers):
+                try:
+                    status = worker.wait(timeout=max(0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    print(f"[GR00T] Worker {index} did not stop within 30s", file=sys.stderr, flush=True)
+                    terminate_worker_group(worker)
+                    worker.wait()
+                    failed = True
+                    continue
+                if status:
+                    terminate_worker_group(worker)
+                    if status != -signal.SIGTERM or worker not in terminating:
+                        print(f"[GR00T] Worker {index} exited with status {status}", file=sys.stderr, flush=True)
+                        failed = True
+    return int(failed)
+
+
+def terminate_worker_group(worker):
+    try:
+        os.killpg(worker.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def run_simulation(args, keys):
+    from gear_sonic.utils.grail.offline_render import kit_environment
+    from gear_sonic.utils.mujoco_sim.render_worker import create_camera_app
+
+    os.environ.update(kit_environment())
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    sys.argv[:] = sys.argv[:1]  # Kit also reads argv.
+
+    stopping = False
+
+    def interrupt(*_):
+        nonlocal stopping
+        stopping = True
+
+    def check_stop():
+        if stopping:
+            raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt)
+    app = None
+    try:
+        app = create_camera_app()
+        signal.signal(signal.SIGTERM, interrupt)
+        check_stop()
+        if keys is None:
+            keys = prepare_run(args)
+        collect(args, app, keys, check_stop)
+    except KeyboardInterrupt:
+        print("[GR00T] Stopped. Completed episodes are ready to export.", flush=True)
+    except Exception:
+        # Kit's exit hook can discard Python's exit status on a failed run.
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+    if app is not None:
+        app.close(wait_for_replicator=False)
 
 
 def main():
@@ -234,7 +379,10 @@ def main():
     parser.add_argument("--object-key", action="append")
     parser.add_argument(
         "--cycle-objects", action="store_true",
-        help="Run until interrupted, advancing to the next prepared object after each episode",
+        help=(
+            "Cycle through prepared objects. Four parallel envs stop after "
+            f"{PARALLEL_CYCLE_EPISODE_LIMIT} total episodes."
+        ),
     )
     parser.add_argument("--cache-dir", type=Path)
     parser.add_argument(
@@ -261,12 +409,21 @@ def main():
         "--inference-mode", choices=("async", "sync"), default="async",
         help="Sync waits for a new chunk every 10 control steps and records locally without live preview",
     )
+    parser.add_argument(
+        "--num-envs", type=int, choices=(1, 4), default=1,
+        help="Number of parallel rollout processes sharing the policy server (4 requires sync)",
+    )
+    parser.add_argument("--worker-index", type=int, choices=range(4), help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.steps = round(args.duration * 50)
     if args.steps < 1 or abs(args.steps / 50 - args.duration) > 1e-9:
         parser.error("--duration must be a positive multiple of 0.02 seconds")
     if args.episodes_per_object < 1:
         parser.error("--episodes-per-object must be positive")
+    if args.num_envs == 4 and args.inference_mode != "sync":
+        parser.error("--num-envs 4 requires --inference-mode sync")
+    if args.worker_index is not None and args.num_envs != 4:
+        parser.error("--worker-index requires --num-envs 4")
     if args.inference_mode == "async" and args.port == args.preview_port:
         parser.error("policy and preview ports must be distinct in async mode")
     if args.cycle_objects and args.episodes_per_object != 1:
@@ -278,30 +435,20 @@ def main():
     args.checkpoint = args.model_dir.resolve()
     args.no_release_override = True
 
-    from gear_sonic.utils.grail.offline_render import kit_environment
-    from gear_sonic.utils.mujoco_sim.render_worker import create_camera_app
-
-    os.environ.update(kit_environment())
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    sys.argv[:] = sys.argv[:1]  # Kit also reads argv.
-    app = create_camera_app()
-
-    def interrupt(*_):
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, interrupt)
-    try:
-        collect(args, app)
-    except KeyboardInterrupt:
-        print("[GR00T] Stopped. Completed episodes are ready to export.", flush=True)
-    except Exception:
-        # Kit's exit hook can discard Python's exit status on a failed run.
-        traceback.print_exc()
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(1)
-    app.close(wait_for_replicator=False)
+    if args.num_envs == 1:
+        run_simulation(args, None)
+        return 0
+    if args.worker_index is None:
+        keys = prepare_run(args)
+        num_workers = args.num_envs
+        if not args.cycle_objects:
+            num_workers = min(num_workers, len(keys) * args.episodes_per_object)
+        command = [sys.executable, "-u", "-m", "gear_sonic.scripts.run_gr00t_rollout", *sys.argv[1:]]
+        return run_workers(command, num_workers, args.output)
+    scene = json.loads((args.output / "traces" / "scene.json").read_text())
+    run_simulation(args, scene["objects"])
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

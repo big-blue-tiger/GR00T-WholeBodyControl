@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import mujoco
 import numpy as np
 
-from .offline_data import load_episode, select_episodes
+from .offline_data import load_episode, select_episodes, SUCCESS_DISTANCE_M
 from .offline_sim import BODY_NAMES, HAND_NAMES, joint_addresses
 
 
@@ -58,12 +58,14 @@ def _export_episodes(traces, renders, output, selected):
         "video": full_modality["video"], "annotation": full_modality["annotation"],
     }
     scene = json.loads((traces / "scene.json").read_text())
+    is_gr00t_rollout = scene.get("policy") == "gr00t"
     exporter = Gr00tDataExporter.create(
         save_root=output, fps=50, features=features, modality_config=modality,
         task=scene["task"], script_config=scene, robot_type="unitree_g1_sonic", preencoded_videos=True,
     )
     model_path = None
     mapping = []
+    outcomes = []
     for path in selected:
         meta, trace = load_episode(path)
         episode_model = (path.parent / meta["model"]).resolve()
@@ -109,8 +111,25 @@ def _export_episodes(traces, renders, output, selected):
         if "object_key" in meta:
             entry["object_key"] = meta["object_key"]
         mapping.append(entry)
+        if is_gr00t_rollout:
+            distance = meta["min_target_distance_m"]
+            outcomes.append(dict(
+                episode_index=entry["episode_index"], source_episode_index=meta["episode_index"],
+                min_target_distance_m=distance, success=distance < SUCCESS_DISTANCE_M,
+            ))
     (output / "meta" / "source_episodes.json").write_text(json.dumps(mapping, indent=2))
     write_gr00t_stats(output)
+    if is_gr00t_rollout:
+        distances = [outcome["min_target_distance_m"] for outcome in outcomes]
+        p25, median, p75 = np.percentile(distances, [25, 50, 75]).tolist()
+        successes = sum(outcome["success"] for outcome in outcomes)
+        summary = dict(
+            num_episodes=len(outcomes), num_success=successes,
+            success_rate=successes / len(outcomes), success_threshold_m=SUCCESS_DISTANCE_M,
+            min_target_distance_m=dict(mean=float(np.mean(distances)), median=median, p25=p25, p75=p75),
+            episodes=outcomes,
+        )
+        (output / "rollout_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
 
 
 def write_gr00t_stats(root):

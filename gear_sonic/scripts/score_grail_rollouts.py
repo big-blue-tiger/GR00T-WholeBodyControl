@@ -56,7 +56,10 @@ def replay(env, metadata, trace, scorer):
     env.step_index = 0
     mujoco.mj_resetData(env.model, env.data)
     load_boundary(env, trace, 0)
-    env.task = CarryTask(recorded_plan(env, metadata, trace), env.planner.pickup_settle_s)
+    env.task = CarryTask(
+        recorded_plan(env, metadata, trace), env.planner.pickup_settle_s,
+        release_by_distance=metadata.get("release_by_distance", False),
+    )
     stream = CarryRewardValueStream(scorer, env.steps / 50)
     stream.bind(env.model, env.data, env.observations, env.qadr)
     stream.advance(env.task, env.observations.contact_forces(env.data))

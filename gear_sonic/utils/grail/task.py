@@ -1,4 +1,4 @@
-"""GRAIL reference-free carry clock, with a separate local release override."""
+"""GRAIL reference-free carry clock and release requests."""
 
 import math
 
@@ -6,13 +6,22 @@ import numpy as np
 
 from .plan import PLAN_FPS
 
+RELEASE_ENTER_DISTANCE_M = 0.20
+RELEASE_EXIT_DISTANCE_M = 0.30
+RELEASE_DWELL_S = 0.5
+
 
 class CarryTask:
-    def __init__(self, plan, settle_s=2.0, dt=0.02, threshold=0.1, stable_steps=3):
+    def __init__(self, plan, settle_s=2.0, dt=0.02, threshold=0.1, stable_steps=3,
+                 *, release_by_distance=True):
         self.plan = plan
         self.dt = dt
         self.settle_steps = math.ceil(settle_s / dt - 1e-9)
         self.threshold, self.stable_steps = threshold, stable_steps
+        self.release_by_distance = release_by_distance
+        self.release_dwell_steps = math.ceil(RELEASE_DWELL_S / dt - 1e-9)
+        self._release_enter_step = None
+        self._release_requested = False
         self.steps, self.start_step = 0, -1
         self.pickup_count = self.release_count = self.lost_contact_count = 0
         self.picked_up = self.released = self.dropped = self.carrying = False
@@ -31,9 +40,20 @@ class CarryTask:
 
     @property
     def release_requested(self):
-        # Preserve the existing forced-open request after walk/hold. It is not
-        # a policy feature and does not gate the sparse command.
+        if self.release_by_distance:
+            return self._release_requested
+        # The GR00T task log and older rollouts use the end of the carry plan.
         return self.playing and self.frame >= self.plan.hold_end_frame
+
+    def _update_release_request(self, object_position):
+        distance = np.linalg.norm(object_position - self.plan.final_position)
+        if not (distance <= RELEASE_EXIT_DISTANCE_M):
+            self._release_enter_step = None
+            return
+        if self._release_enter_step is None and distance < RELEASE_ENTER_DISTANCE_M:
+            self._release_enter_step = self.steps
+        if self._release_enter_step is not None:
+            self._release_requested = self.steps - self._release_enter_step >= self.release_dwell_steps
 
     def read(self, base_position):
         sparse = self.plan.sparse[self.frame].copy()
@@ -43,7 +63,7 @@ class CarryTask:
     def command(self, base_position):
         return self.read(base_position) if self.carrying else np.zeros(2, dtype=np.float32)
 
-    def update(self, steps, hand_force, table_force):
+    def update(self, steps, hand_force, table_force, object_position):
         if steps == self.steps:
             return
         request = self.release_requested
@@ -64,6 +84,8 @@ class CarryTask:
         if self.picked_up and self.start_step < 0:
             self.start_step = steps + self.settle_steps
         self.steps = steps
+        if self.release_by_distance and self.picked_up and not request:
+            self._update_release_request(object_position)
         for name, happened in dict(
             picked_up=self.picked_up,
             playback=self.playing,

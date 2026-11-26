@@ -35,12 +35,13 @@ def joint_addresses(model, names):
 
 
 class OfflineEnvironment:
-    def __init__(self, model, scene, initial, env_id, output, steps, scene_dir):
+    def __init__(self, model, scene, initial, env_id, output, steps, scene_dir, *, release_by_distance=True):
         self.model, self.scene, self.initial = model, scene, initial
         self.data = mujoco.MjData(model)
         self.cfg, self.manifest = scene["config"], scene["manifest"]
         self.env_id, self.output, self.steps = env_id, Path(output), steps
         self.scene_dir = scene_dir
+        self.release_by_distance = release_by_distance
         self.observations = Observations(model, self.cfg, self.manifest["bps"])
         self.qadr, self.vadr = joint_addresses(model, COMMAND_NAMES)
         self.object_position_columns = object_position_columns(model)
@@ -59,7 +60,9 @@ class OfflineEnvironment:
             np.random.default_rng(seed), self.planner,
             release_position=self.scene.get("release_position"),
         )
-        self.task = CarryTask(self.plan, self.planner.pickup_settle_s)
+        self.task = CarryTask(
+            self.plan, self.planner.pickup_settle_s, release_by_distance=self.release_by_distance,
+        )
         self.task_description = describe_task(
             self.scene["task"], self.scene["object_key"], self.plan.sparse[0, 1]
         )
@@ -170,7 +173,10 @@ class OfflineEnvironment:
         start = time.perf_counter()
         contacts = self.observations.contact_forces(self.data)
         forces, table = contacts
-        self.task.update(self.step_index, np.linalg.norm(forces, axis=1).sum(), np.linalg.norm(table))
+        self.task.update(
+            self.step_index, np.linalg.norm(forces, axis=1).sum(), np.linalg.norm(table),
+            self.data.xpos[self.observations.obj],
+        )
         self.timing["task_contact_s"] += time.perf_counter() - start
         return contacts
 
@@ -189,6 +195,7 @@ class OfflineEnvironment:
             checkpoint=relpath(self.scene_dir / self.scene["checkpoint"], directory),
             decoder=relpath(self.scene_dir / self.scene["decoder"], directory),
             initial_pose=relpath(self.scene_dir / self.scene["initial_pose"], directory),
+            release_by_distance=self.task.release_by_distance,
             task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
             **result,
         )

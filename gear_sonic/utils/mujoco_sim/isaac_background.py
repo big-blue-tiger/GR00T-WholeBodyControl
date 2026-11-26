@@ -83,7 +83,8 @@ class BackgroundRenderer:
                 self.process.start()
             finally:
                 child.close()
-            self._wait(None, 120)
+            # The first NuRec frame may have to compile ray-tracing shaders.
+            self._wait(None, 240)
         except BaseException:
             self.close()
             raise

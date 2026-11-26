@@ -1,5 +1,7 @@
 """Batched GRAIL actor, a shared C++ decoder, and CPU simulation workers."""
 
+from contextlib import ExitStack
+import fcntl
 import json
 import multiprocessing as mp
 import os
@@ -34,15 +36,41 @@ def gpu_memory():
 
 class Decoder:
     def __init__(self, executable, model, log):
-        self.directory = tempfile.TemporaryDirectory(prefix="grail-offline-")
-        self.endpoint = "ipc://" + str(Path(self.directory.name) / "decoder.sock")
-        self.log = open(log, "w")
-        self.process = subprocess.Popen([str(executable), str(model), self.endpoint], stdout=self.log,
-                                        stderr=subprocess.STDOUT)
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.REQ)
-        self.socket.setsockopt(zmq.LINGER, 0)
-        self.socket.connect(self.endpoint)
+        with ExitStack() as startup:
+            self.directory = tempfile.TemporaryDirectory(prefix="grail-offline-")
+            startup.callback(self.directory.cleanup)
+            socket_path = Path(self.directory.name) / "decoder.sock"
+            self.endpoint = f"ipc://{socket_path}"
+            self.log = startup.enter_context(open(log, "w"))
+            self.context = zmq.Context()
+            startup.callback(self.context.term)
+            self.socket = self.context.socket(zmq.REQ)
+            startup.callback(self.socket.close, linger=0)
+            self.socket.setsockopt(zmq.LINGER, 0)
+            self.socket.connect(self.endpoint)
+
+            # The decoder may rebuild a shared TensorRT cache before binding its socket.
+            with open(model, "rb") as model_file:
+                fcntl.flock(model_file, fcntl.LOCK_EX)
+                self.process = subprocess.Popen(
+                    [str(executable), str(model), self.endpoint], stdout=self.log, stderr=subprocess.STDOUT,
+                )
+                try:
+                    self.wait_until_ready(socket_path)
+                except BaseException:
+                    self.stop_process()
+                    raise
+            startup.pop_all()
+
+    def wait_until_ready(self, socket_path):
+        deadline = time.monotonic() + 120
+        while not socket_path.is_socket():
+            status = self.process.poll()
+            if status is not None:
+                raise RuntimeError(f"decoder exited with {status} during startup; see {self.log.name}")
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"decoder startup timed out; see {self.log.name}")
+            time.sleep(0.05)
 
     def __call__(self, requests):
         self.socket.send(msgpack.packb(requests, use_bin_type=True))
@@ -54,7 +82,7 @@ class Decoder:
                 raise TimeoutError(f"decoder request timed out; see {self.log.name}")
         return msgpack.unpackb(self.socket.recv(), raw=False)
 
-    def close(self):
+    def stop_process(self):
         if self.process.poll() is None:
             self.process.terminate()
             try:
@@ -62,6 +90,9 @@ class Decoder:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
+
+    def close(self):
+        self.stop_process()
         self.socket.close()
         self.context.term()
         self.log.close()

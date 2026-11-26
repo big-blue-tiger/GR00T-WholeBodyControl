@@ -109,13 +109,29 @@ python -m gear_sonic.scripts.score_grail_rollouts \
 用 `--batch` 将整个数据集的分数保存到以来源命名的子目录。
 
 ```bash
+run_dir="outputs/gr00t_rollouts/20261125_191637-18053"
+
 python -m gear_sonic.scripts.score_grail_rollouts \
-  --batch \
-  --traces outputs/throw_trash_into_bin \
-  --output outputs/gr00t_reward_value_scores
+  --traces "$run_dir/traces" \
+  --output "$run_dir/gr00t_reward_value_scores"
 ```
 
 例如 `throw_trash_into_bin/episode_000000/trace.npz` 的分数保存为 `outputs/gr00t_reward_value_scores/throw_trash_into_bin/episode_000000.npz`。`--traces` 可接收多个目录。输出根目录中的 `episodes.jsonl` 先按输入目录顺序排列，再按原始回合编号升序排列。
+
+### 可视化单次运行的打分结果
+
+完成评分后，在同一个 Python 环境中运行：
+
+```bash
+run_dir="outputs/gr00t_rollouts/20261125_191637-18053"
+
+python -m gear_sonic.scripts.visualize_grail_scores \
+  --traces "$run_dir/traces" \
+  --value-scores "$run_dir/gr00t_reward_value_scores" \
+  --output "$run_dir/gr00t_reward_value_plots"
+```
+
+评分目录应包含该次运行的 `episodes.jsonl` 和 NPZ 文件，截图读取与 `--traces` 同级的 `renders/`。每回合生成一张曲线图，分别显示 Value 和 TD Advantage 的原始曲线及 50 步滑动均值，并标出评分记录中的接管时刻。有接管建议的回合还会按录像时间戳截取第一人称画面，保存为 `episode_XXXXXX_recovery.png`。加 `--episode 0` 可先查看一个回合，或重复传入 `--episode` 选择多个回合。
 
 ## 校验渲染结果
 

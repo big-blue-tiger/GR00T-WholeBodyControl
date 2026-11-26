@@ -16,8 +16,13 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
   fi
 
   output=${OUTPUT_DIR:-"outputs/gr00t_rollouts/$(date +%Y%m%d_%H%M%S)-$$"}
+  export_dir=${EXPORT_DIR:-"$output/dataset"}
   mkdir -p -- "$(dirname -- "$output")"
   mkdir -- "$output"
+  if [[ -e $export_dir || -L $export_dir ]]; then
+    printf 'Export destination already exists: %s\n' "$export_dir" >&2
+    exit 1
+  fi
   printf 'Starting simulation with GR00T at 127.0.0.1:%s. Output %s\n' "$GR00T_PORT" "$output"
 
   object_args=()
@@ -67,9 +72,9 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
   shopt -s nullglob
   completed_episodes=("$output"/traces/episode_*/episode.json)
   if (( ${#completed_episodes[@]} )); then
-    printf 'Exporting completed episodes to %s\n' "$output/dataset"
+    printf 'Exporting completed episodes to %s\n' "$export_dir"
     "$SIM_PYTHON" -u -m gear_sonic.scripts.grail_offline export \
-      --traces "$output/traces" --renders "$output/renders" --output "$output/dataset" --labels all
+      --traces "$output/traces" --renders "$output/renders" --output "$export_dir" --labels all
   fi
   exit "$status"
 fi

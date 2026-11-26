@@ -51,6 +51,7 @@ POLICY_BACKEND=gr00t bash gear_sonic/scripts/run_grail_carry.sh --cycle-objects
 | `MODEL_DIR` | 用于记录推理权重路径，应与手动启动的服务一致。默认是 GR00T 仓库下的 `outputs/throw_trash_into_bin_n17_fullpass` |
 | `SIM_PYTHON` | 仿真解释器，默认使用当前环境的 `python` |
 | `OUTPUT_DIR` | 新输出目录，默认 `outputs/gr00t_rollouts/<启动时间>-<PID>` |
+| `EXPORT_DIR` | LeRobot 数据集的导出目录，默认 `$OUTPUT_DIR/dataset`，目标目录须尚未创建 |
 
 | 通道 | 数据 |
 |---|---|
@@ -79,7 +80,7 @@ python -m gear_sonic.scripts.run_camera_viewer \
   --h264 --camera-host 127.0.0.1 --camera-port 15555
 ```
 
-**Q** 关闭本地查看器。启动终端按 **Ctrl+C** 结束采集，已完成的回合会自动导出到本次运行目录的 `dataset/`。[输出和手动导出](grail_offline.md#导出-gr00t-在线回合)
+**Q** 关闭本地查看器。启动终端按 **Ctrl+C** 结束采集，已完成的回合会自动导出到 `EXPORT_DIR`，省略时使用本次运行目录的 `dataset/`。[输出和手动导出](grail_offline.md#导出-gr00t-在线回合)
 
 采集完成后，可使用保存的状态和关节命令进行 [TD Advantage 离线评分](grail_offline.md#离线评估接管时刻)。
 

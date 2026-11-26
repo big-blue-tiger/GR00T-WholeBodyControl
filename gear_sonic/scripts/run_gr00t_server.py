@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--port", type=int, default=5550)
     parser.add_argument("--ready-file", type=Path)
+    parser.add_argument("--compile", action="store_true", help="Compile and warm up the action head")
     args = parser.parse_args()
 
     repo = args.gr00t_repo.resolve()
@@ -55,6 +56,27 @@ def main():
             axis=1,
         )
         return dict(episode_id=episode_id, step=step, actions=actions.astype("<f4", copy=False).tobytes())
+
+    if args.compile:
+        from gear_sonic.utils.grail.offline_task import DEFAULT_TASK_TEMPLATE, describe_task
+
+        dit = policy.model.action_head.model
+        dit.forward = torch.compile(dit.forward, dynamic=True)
+        print("[GR00T] Warming up the compiled action head", flush=True)
+        state = {
+            "left_leg": bytes(6 * 4),
+            "right_leg": bytes(6 * 4),
+            "waist": bytes(3 * 4),
+            "left_arm": bytes(7 * 4),
+            "right_arm": bytes(7 * 4),
+            "left_hand": bytes(7 * 4),
+            "right_hand": bytes(7 * 4),
+            "projected_gravity": np.array([0, 0, -1], dtype="<f4").tobytes(),
+        }
+        rgb = bytes(480 * 640 * 3)
+        for step, (object_key, turn) in enumerate((("plastic_bottle", 0), ("apple", 1))):
+            prompt = describe_task(DEFAULT_TASK_TEMPLATE, object_key, turn)
+            get_action_rgb(-1, step, rgb, state, prompt)
 
     with PolicyServer(policy, host="127.0.0.1", port=args.port) as server:
         server.register_endpoint("get_action_rgb", get_action_rgb)

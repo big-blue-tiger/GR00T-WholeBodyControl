@@ -332,7 +332,8 @@ class GrailRuntime:
             contacts = self.observations.contact_forces(self.data)
             forces, table = contacts
             self.task.update(
-                self.step_count, np.linalg.norm(forces, axis=1).sum(), np.linalg.norm(table)
+                self.step_count, np.linalg.norm(forces, axis=1).sum(), np.linalg.norm(table),
+                self.data.xpos[self.observations.obj],
             )
             for name, elapsed in self.task.events.items():
                 if name not in self.reported_events:
