@@ -40,8 +40,8 @@ Isaac Sim 根据每条轨迹引用的场景读取物体 USD，默认位于 `gear
 
 ```bash
 python -m gear_sonic.scripts.grail_offline render \
-  --traces outputs/throw_trash_into_bin --output outputs/throw_trash_into_bin_render \
-  --render-envs 2 --encode-workers 4
+  --traces outputs/gr00t_rollouts/20261125_191637-18053/traces_recovery --output outputs/gr00t_rollouts/20261125_191637-18053/traces_recovery_render \
+  --render-envs 4 --encode-workers 4 --resume
 ```
 
 | 参数 | 说明 |
@@ -79,6 +79,57 @@ python -m gear_sonic.scripts.grail_offline export \
 | `export --traces` / `--renders` | 轨迹目录和对应的渲染目录 |
 | `export --output` | GR00T N1.7 数据集输出目录，须为新目录 |
 | `export --labels` | 默认导出 `success`。可用逗号分隔标签，或用 `all` 导出全部轨迹 |
+| `export --value-scores` | 可选。将对应轨迹的逐步 TD Advantage 写入 LeRobot 数据集 |
+
+### 导出成功的 Recovery 回合并加权训练
+
+对拼接后的 `traces_recovery/` 重新评分。每条动作使用该动作执行后的转移分数。导出沿用 LeRobot v2.1，只增加一个 `float32` 列 `td_advantage`。
+
+指定 `--value-scores` 时，每个导出的回合还会在数据集的 `debug/advantage/` 生成一张 PNG，文件名与 `data/` 中的回合编号一致。图中显示逐帧 TD Advantage、从当前帧开始的 40 帧加权 TD Advantage，以及训练 loss 权重。窗口不足 40 帧的尾部只显示逐帧分数。
+
+```bash
+run_dir=outputs/gr00t_rollouts/20261125_191637-18053
+
+python -m gear_sonic.scripts.grail_offline auto-label \
+  --traces "$run_dir/traces_recovery"
+
+python -m gear_sonic.scripts.score_grail_rollouts \
+  --traces "$run_dir/traces_recovery" \
+  --output "$run_dir/traces_recovery_scores" --workers 8 --resume
+
+
+python -m gear_sonic.scripts.grail_offline export \
+  --traces "$run_dir/traces_recovery" \
+  --renders "$run_dir/traces_recovery_render" \
+  --value-scores "$run_dir/traces_recovery_scores" \
+  --output "outputs/gr00t_dataset_recovery_td_advantage" --labels success
+```
+
+在训练容器里将 `RECOVERY_DATASET` 指向导出的数据集目录，启用 Isaac-GR00T 的 `--advantage-weighted-sft`。
+
+```bash
+source /opt/conda/etc/profile.d/conda.sh
+conda activate gr00t-n17
+cd /home/Isaac-GR00T
+
+export HF_HUB_CACHE=/home/Isaac-GR00T/models/hf-cache
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export GROOT_PATCH_MISTRAL=1 GROOT_HF_LOCAL_FIRST=1 NO_ALBUMENTATIONS_UPDATE=1
+export CUDA_VISIBLE_DEVICES=0
+RECOVERY_DATASET=/home/Isaac-GR00T/dataset/throw_trash_into_bin_recovery_td_advantage
+
+USE_WANDB=0 NUM_GPUS=1 GLOBAL_BATCH_SIZE=64 \
+DATALOADER_NUM_WORKERS=2 MAX_STEPS=25583 SAVE_STEPS=2000 \
+SHARD_SIZE=1024 EPISODE_SAMPLING_RATE=1.0 NUM_SHARDS_PER_EPOCH=338 \
+bash examples/finetune.sh \
+  --base-model-path /home/Isaac-GR00T/models/GR00T-N1.7-3B \
+  --dataset-path "$RECOVERY_DATASET" \
+  --embodiment-tag UNITREE_G1_SONIC \
+  --output-dir /home/Isaac-GR00T/outputs/throw_trash_into_bin_n17_recovery_weighted \
+  -- --gradient-accumulation-steps 2 --advantage-weighted-sft
+```
+
+训练在同一 40 帧动作窗口内，将 TD Advantage 逐帧乘以从 2 线性降到 0 的系数后取均值 `x`。整个 chunk 的权重为 `min(exp(6.578815 * x), 1)`。权重乘到现有动作 loss 上，分母仍是有效动作元素数。省略训练开关时运行普通 SFT。
 
 ## 导出 GR00T 在线回合
 
@@ -105,6 +156,8 @@ python -m gear_sonic.scripts.score_grail_rollouts \
 ```
 
 通过重复传入 `--episode` 可只评分指定回合。输入需要 `episode.json`、`trace.npz` 及引用的 `scene.json`、`model.mjb`。`trace.npz` 必须含 `command_q`、`command_dq`、`command_kp`、`command_kd` 和 `command_tau`。逐步分数以 NPZ 保存，`episodes.jsonl` 记录原始回合和分数文件的路径、评分权重、折扣系数及首次接管建议。
+
+`--workers` 设置并行评分的 CPU 进程数，默认 `1`。每完成一个回合就更新 `episodes.jsonl`。中断后用原来的输入、输出和 checkpoint 加 `--resume`，已登记且校验通过的回合会跳过，缺少索引或分数文件的回合会重新评分。若旧版评分还在运行，先等它退出并写出索引，再使用 `--resume`。
 
 用 `--batch` 将整个数据集的分数保存到以来源命名的子目录。
 

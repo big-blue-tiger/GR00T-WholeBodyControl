@@ -14,6 +14,44 @@ def episodes(root):
     return sorted(Path(root).glob("episode_*/episode.json"))
 
 
+def score_rows(scores, traces):
+    manifest = scores / "episodes.jsonl"
+    groups = {}
+    for line in manifest.read_text().splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        score = Path(row["score"])
+        source_path = Path(row["trace"]) if "trace" in row else None
+        source = source_path.parent.parent if source_path is not None else None
+        episode = source_path.parent.name if source_path is not None else score.stem
+        if score.stem != episode:
+            raise ValueError(f"score and trace refer to different episodes in {manifest}: {episode}, {score}")
+        batch_score = scores / score.parent.name / score.name
+        row["local_score"] = (
+            batch_score if score.parent.name != scores.name and batch_score.is_file() else scores / score.name
+        )
+        groups.setdefault(source, []).append((episode, row))
+
+    if traces in groups:
+        selected = groups[traces]
+    elif len(groups) == 1:
+        selected = next(iter(groups.values()))
+    else:
+        matches = [rows for source, rows in groups.items()
+                   if source is not None and source.parts[-2:] == traces.parts[-2:]]
+        if len(matches) != 1:
+            raise ValueError(f"cannot identify scores for {traces} in {manifest}")
+        selected = matches[0]
+
+    rows = {}
+    for episode, row in selected:
+        if episode in rows:
+            raise ValueError(f"duplicate score for {episode} in {manifest}")
+        rows[episode] = row
+    return rows
+
+
 def load_episode(path):
     path = Path(path)
     metadata = json.loads(path.read_text())
@@ -34,14 +72,14 @@ def label_episode(root, index, label):
     update_episode_metadata(path, metadata)
 
 
-def update_episode_metadata(path, metadata):
+def update_episode_metadata(path, metadata, *, mode_from=None):
     # Publish the metadata as a single replacement so readers always see complete JSON.
     temporary = NamedTemporaryFile(mode="w", dir=path.parent, delete=False)
     temporary_path = Path(temporary.name)
     try:
         with temporary:
             json.dump(metadata, temporary, indent=2)
-        temporary_path.chmod(S_IMODE(path.stat().st_mode))
+        temporary_path.chmod(S_IMODE((mode_from or path).stat().st_mode))
         temporary_path.replace(path)
     finally:
         temporary_path.unlink(missing_ok=True)

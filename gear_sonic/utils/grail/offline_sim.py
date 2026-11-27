@@ -11,10 +11,10 @@ import mujoco
 import numpy as np
 
 from .episode import load_initial_pose, reset_scene
-from .observations import Observations
+from .observations import Observations, rotation
 from .offline_data import distance_label, object_position_columns
 from .offline_task import describe_task
-from .plan import CarryPlannerConfig
+from .plan import PLAN_FPS, CarryPlan, CarryPlannerConfig
 from .task import CarryTask
 
 BODY_NAMES = (
@@ -27,11 +27,45 @@ BODY_NAMES = (
 HAND_NAMES = [f"{s}_hand_{j}_joint" for s in ("left", "right") for j in
               ("thumb_0", "thumb_1", "thumb_2", "middle_0", "middle_1", "index_0", "index_1")]
 COMMAND_NAMES = BODY_NAMES + HAND_NAMES
+COMMAND_KEYS = ("q", "dq", "kp", "kd", "tau")
+BOUNDARY_KEYS = ("qpos", "qvel", "mocap_pos", "mocap_quat")
+INTEGRATION_STATE = mujoco.mjtState.mjSTATE_INTEGRATION
+HANDOFF_STEPS = 10
 
 
 def joint_addresses(model, names):
     ids = np.array([model.joint(name).id for name in names])
     return model.jnt_qposadr[ids], model.jnt_dofadr[ids]
+
+
+def recorded_plan(env, metadata, trace):
+    model = env.model
+    carry, release = [model.body_mocapid[model.body(f"grail_{name}").id]
+                      for name in ("carry", "release")]
+    carry_quat, release_quat = trace["mocap_quat"][0, [carry, release]]
+    turn = rotation(release_quat) @ rotation(carry_quat).T
+    angle = float(np.arctan2(turn[1, 0], turn[0, 0]))
+    hold_end = round(metadata["reset"]["plan_drop_s"] * PLAN_FPS)
+    turn_end = 0 if abs(angle) <= 1e-6 else max(1, round(abs(angle) / env.planner.angular_speed * PLAN_FPS))
+    walk_end = hold_end - max(1, round(env.planner.hold_s * PLAN_FPS))
+    if not 0 <= turn_end <= walk_end < hold_end:
+        raise ValueError("Invalid carry phase lengths in trace")
+    sparse = np.zeros((hold_end + 1, 2), dtype=np.float32)
+    sparse[:turn_end, 1] = angle
+    carry_pos, release_pos = trace["mocap_pos"][0, [carry, release]]
+    return CarryPlan(carry_pos, carry_quat, release_pos, release_quat, sparse,
+                     np.asarray(metadata["reset"]["base_goal_xy"]), turn_end, walk_end,
+                     hold_end, angle, (walk_end - turn_end) * env.planner.walk_speed / PLAN_FPS)
+
+
+def load_boundary(env, trace, index):
+    if "mujoco_state" in trace:
+        mujoco.mj_setState(env.model, env.data, trace["mujoco_state"][index], INTEGRATION_STATE)
+    else:
+        for key in BOUNDARY_KEYS:
+            getattr(env.data, key)[:] = trace[key][index]
+        env.data.time = trace["sim_time"][index]
+    mujoco.mj_forward(env.model, env.data)
 
 
 class OfflineEnvironment:
@@ -42,6 +76,7 @@ class OfflineEnvironment:
         self.env_id, self.output, self.steps = env_id, Path(output), steps
         self.scene_dir = scene_dir
         self.release_by_distance = release_by_distance
+        self.recovery = None
         self.observations = Observations(model, self.cfg, self.manifest["bps"])
         self.qadr, self.vadr = joint_addresses(model, COMMAND_NAMES)
         self.object_position_columns = object_position_columns(model)
@@ -54,6 +89,7 @@ class OfflineEnvironment:
                            observation_s=0., forward_s=0., write_s=0.)
 
     def start_episode(self, episode, seed):
+        self.recovery = None
         self.episode, self.seed, self.step_index = episode, seed, 0
         self.plan, self.reset_details = reset_scene(
             self.model, self.data, self.cfg, self.manifest, self.initial,
@@ -80,22 +116,47 @@ class OfflineEnvironment:
 
     def reset(self, episode, seed):
         self.start_episode(episode, seed)
-        n = self.steps
-        self.trace.update({
-            "policy_proprio": np.empty((n, 5, 161), dtype=np.float32),
-            "policy_task": np.empty((n, 79), dtype=np.float32),
-            "release_requested": np.empty(n, dtype=bool),
-            "expert_action": np.empty((n, 66), dtype=np.float32),
-            "decoder_observation": np.empty((n, 994), dtype=np.float32),
-            "decoder_action": np.empty((n, 29), dtype=np.float32),
-            **{f"command_{key}": np.empty((n, 43), dtype=np.float32)
-               for key in ("q", "dq", "kp", "kd", "tau")},
-        })
+        self.initialize_policy_trace()
         return self.observe()
 
+    def initialize_policy_trace(self):
+        n = self.steps
+        shapes = dict(policy_proprio=(5, 161), policy_task=(79,), expert_action=(66,),
+                      decoder_observation=(994,), decoder_action=(29,))
+        shapes.update({f"command_{key}": (len(COMMAND_NAMES),) for key in COMMAND_KEYS})
+        for key, shape in shapes.items():
+            if key not in self.trace:
+                self.trace[key] = np.full((n, *shape), np.nan, dtype=np.float32)
+        self.trace.setdefault("release_requested", np.zeros(n, dtype=bool))
+
+    def start_replay(self, metadata, trace):
+        self.step_index = 0
+        mujoco.mj_resetData(self.model, self.data)
+        load_boundary(self, trace, 0)
+        self.plan = recorded_plan(self, metadata, trace)
+        self.task = CarryTask(
+            self.plan, self.planner.pickup_settle_s,
+            release_by_distance=metadata.get("release_by_distance", False),
+        )
+
+    def restart_pickup(self):
+        self.task = CarryTask(
+            self.plan, self.planner.pickup_settle_s, release_by_distance=self.task.release_by_distance,
+        )
+        self.task.steps = self.step_index
+
+    def record_integration_state(self):
+        self.trace["mujoco_state"] = np.empty((
+            self.steps + 1, mujoco.mj_stateSize(self.model, INTEGRATION_STATE),
+        ))
+        self.snapshot()
+
     def snapshot(self):
-        for key in ("qpos", "qvel", "mocap_pos", "mocap_quat"):
+        for key in BOUNDARY_KEYS:
             self.trace[key][self.step_index] = getattr(self.data, key)
+        if "mujoco_state" in self.trace:
+            mujoco.mj_getState(self.model, self.data, self.trace["mujoco_state"][self.step_index],
+                               INTEGRATION_STATE)
 
     def decoder_request(self, angular=None):
         if angular is None:
@@ -123,7 +184,8 @@ class OfflineEnvironment:
         self.step(reply, action, expert=expert)
         if self.step_index == self.steps:
             path = self.save()
-            return dict(env_id=self.env_id, done=True, episode=str(path))
+            start = 0 if self.recovery is None else self.recovery["step"]
+            return dict(env_id=self.env_id, done=True, episode=str(path), transitions=self.steps - start)
         return self.observe()
 
     def step(self, reply, action, *, expert=None):
@@ -131,18 +193,32 @@ class OfflineEnvironment:
         if (reply["env_id"], reply["episode_id"], reply["step"]) != (self.env_id, self.episode, i):
             raise ValueError("decoder reply does not match environment control boundary")
         self.trace["action"][i] = action
-        command = {key: np.asarray(reply[key]) for key in ("q", "dq", "kp", "kd", "tau")}
+        command = {key: np.asarray(reply[key]) for key in COMMAND_KEYS}
+        if self.recovery is not None:
+            if not all(np.isfinite(values).all() for values in (*command.values(), action, reply["raw_action"])):
+                raise ValueError(f"episode {self.episode}, step {i}: nonfinite recovery action or command")
+            progress = min((i - self.recovery["step"]) / HANDOFF_STEPS, 1.)
+            weight = progress**2 * (3. - 2. * progress)
+            self.trace["recovery_weight"][i] = weight
+            if weight < 1.:
+                command = {key: (1. - weight) * self.handoff_command[key] + weight * values
+                           for key, values in command.items()}
         if expert is not None:
             self.trace["policy_proprio"][i], self.trace["policy_task"][i] = self.current_observation
             self.trace["release_requested"][i] = self.task.release_requested
             self.trace["expert_action"][i] = expert
             self.trace["decoder_observation"][i] = reply["observation"]
-            self.trace["decoder_action"][i] = reply["raw_action"]
             self.observations.last_action[:] = expert
+        if "decoder_action" in self.trace:
+            self.trace["decoder_action"][i] = reply["raw_action"]
         if "command_q" in self.trace:
             for key, values in command.items():
                 self.trace[f"command_{key}"][i] = values
         self.advance_physics(command)
+        if self.recovery is not None and (
+            not np.isfinite(self.data.qpos).all() or not np.isfinite(self.data.qvel).all()
+        ):
+            raise RuntimeError(f"episode {self.episode}, step {i}: invalid MuJoCo state")
         self.update_task()
         self.snapshot()
 
@@ -184,21 +260,29 @@ class OfflineEnvironment:
         start = time.perf_counter()
         result = distance_label(self.trace["qpos"][:, self.object_position_columns], self.plan.final_position)
         directory = self.output / f"episode_{self.episode:06d}"
-        directory.mkdir()  # Existing episodes must be explicitly removed before recollecting.
+        directory.mkdir(exist_ok=self.recovery is not None)
         np.savez_compressed(directory / "trace.npz", **self.trace)
-        metadata = dict(
-            episode_index=self.episode, env_id=self.env_id, seed=self.seed,
-            fps=50, physics_dt=.005, transitions=self.steps, task=self.task_description,
-            object_key=self.scene["object_key"],
-            scene=relpath(self.scene_dir / "scene.json", directory),
-            model=relpath(self.scene_dir / "model.mjb", directory),
-            checkpoint=relpath(self.scene_dir / self.scene["checkpoint"], directory),
-            decoder=relpath(self.scene_dir / self.scene["decoder"], directory),
-            initial_pose=relpath(self.scene_dir / self.scene["initial_pose"], directory),
-            release_by_distance=self.task.release_by_distance,
-            task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
-            **result,
-        )
+        if self.recovery is None:
+            metadata = dict(
+                episode_index=self.episode, env_id=self.env_id, seed=self.seed,
+                fps=50, physics_dt=.005, transitions=self.steps, task=self.task_description,
+                object_key=self.scene["object_key"],
+                scene=relpath(self.scene_dir / "scene.json", directory),
+                model=relpath(self.scene_dir / "model.mjb", directory),
+                checkpoint=relpath(self.scene_dir / self.scene["checkpoint"], directory),
+                decoder=relpath(self.scene_dir / self.scene["decoder"], directory),
+                initial_pose=relpath(self.scene_dir / self.scene["initial_pose"], directory),
+                release_by_distance=self.task.release_by_distance,
+                task_events=self.task.events, reset=self.reset_details, command_joint_names=COMMAND_NAMES,
+                **result,
+            )
+        else:
+            if self.recovery["regrasp"]:
+                self.recovery["task_events"] = self.task.events
+            metadata = dict(
+                self.source_metadata, recovery=self.recovery, **result,
+                task_events=self.task.events | self.prefix_task_events,
+            )
         pending_metadata = directory / "episode.json.tmp"
         pending_metadata.write_text(json.dumps(metadata, indent=2))
         pending_metadata.replace(directory / "episode.json")
@@ -245,9 +329,24 @@ def simulation_worker(connection, options):
                         envs[env_id] = env
                     results.append(envs[env_id].reset(episode, seed))
                 scenes.clear()
-            else:
+            elif operation == "recover":
+                from .offline_recovery import restore_episode
+
+                scenes = {env.recording_assets: (env.model, env.scene) for env in envs.values()}
+                results = []
+                for job in payload:
+                    env, observation = restore_episode(job, scenes, options["output"], options["hand_primitives"])
+                    previous = envs.get(env.env_id)
+                    if previous is not None:
+                        for key, elapsed in previous.timing.items():
+                            env.timing[key] += elapsed
+                    envs[env.env_id] = env
+                    results.append(observation)
+            elif operation == "step":
                 results = [envs[item["env_id"]].advance(item["reply"], item["expert"], item["action"])
                            for item in payload]
+            else:
+                raise ValueError(f"unknown offline simulation operation: {operation}")
             connection.send(results)
     except BaseException:
         connection.send(dict(error=traceback.format_exc()))

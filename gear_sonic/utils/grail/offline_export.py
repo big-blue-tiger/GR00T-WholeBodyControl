@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import mujoco
 import numpy as np
 
-from .offline_data import load_episode, select_episodes, SUCCESS_DISTANCE_M
+from .offline_data import SUCCESS_DISTANCE_M, load_episode, score_rows, select_episodes
 from .offline_sim import BODY_NAMES, HAND_NAMES, joint_addresses
 
 
@@ -17,17 +17,83 @@ def export(args):
         raise ValueError(f"no episodes match labels={args.labels}")
     if args.output.exists():
         raise FileExistsError(f"use a new dataset output directory: {args.output}")
+    scores = None
+    if args.value_scores is not None:
+        scores = score_rows(args.value_scores.resolve(), args.traces.resolve())
+        for path in selected:
+            row = scores.get(path.parent.name)
+            if row is None:
+                raise ValueError(f"missing TD Advantage score for {path}")
+            source = Path(row.get("trace", ""))
+            if source.parts[-3:] != path.resolve().parts[-3:]:
+                raise ValueError(f"TD Advantage score for {source} does not belong to {path}")
 
     # Publish the dataset only after all episodes and training statistics are ready.
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".lerobot-", dir=args.output.parent) as temporary:
         dataset = Path(temporary) / "dataset"
-        _export_episodes(args.traces, args.renders, dataset, selected)
+        _export_episodes(args.traces, args.renders, dataset, selected, scores)
         dataset.rename(args.output)
     print(f"[Export] {len(selected)} episodes -> {args.output}", flush=True)
 
 
-def _export_episodes(traces, renders, output, selected):
+def load_td_advantage(score_path, trace):
+    with np.load(score_path, allow_pickle=False) as scores:
+        if not {"td_advantage", "time_s", "pelvis_pos"}.issubset(scores.files):
+            raise ValueError(f"missing TD Advantage or replay boundaries in {score_path}")
+        if not np.array_equal(scores["time_s"], trace["sim_time"][1:]) or not np.array_equal(
+            scores["pelvis_pos"], trace["qpos"][1:, :3]
+        ):
+            raise ValueError(f"score replay boundaries do not match the trajectory: {score_path}")
+        advantages = scores["td_advantage"].astype(np.float32)
+    if advantages.shape != (len(trace["action"]),) or not np.isfinite(advantages).all():
+        raise ValueError(f"invalid per-transition TD Advantage in {score_path}")
+    return advantages
+
+
+def chunk_advantage_weights(advantages):
+    """Match the 40-frame sampler and loss weighting in Isaac-GR00T."""
+    coefficients = np.linspace(2.0, 0.0, 40, dtype=np.float32)
+    if len(advantages) < len(coefficients):
+        empty = np.empty(0, dtype=np.float32)
+        return empty, empty
+    windows = np.lib.stride_tricks.sliding_window_view(advantages, len(coefficients))
+    chunk_advantage = (windows * coefficients).mean(axis=-1)
+    loss_weights = np.exp(np.minimum(6.578815 * chunk_advantage, 0.0))
+    return chunk_advantage, loss_weights
+
+
+def save_advantage_plot(path, advantages, episode_index, source_episode_index):
+    from matplotlib.figure import Figure
+
+    chunk_advantage, loss_weights = chunk_advantage_weights(advantages)
+    figure = Figure(figsize=(12, 5), layout="constrained")
+    axis = figure.subplots()
+    weight_axis = axis.twinx()
+    raw_line, = axis.plot(
+        advantages, color="C0", alpha=0.65, label="Per-frame TD Advantage",
+        marker="o" if len(advantages) == 1 else None,
+    )
+    chunk_line, = axis.plot(
+        chunk_advantage, color="C1", label="40-frame weighted TD Advantage (x)",
+        marker="o" if len(chunk_advantage) == 1 else None,
+    )
+    weight_line, = weight_axis.plot(
+        loss_weights, color="C2", linestyle="--", label=r"Loss weight $e^{\min(6.578815\,x,\,0)}$",
+        marker="o" if len(loss_weights) == 1 else None,
+    )
+    axis.set_title(f"Episode {episode_index:06d}  |  Source episode {source_episode_index:06d}")
+    axis.set_xlabel("Frame index (chunk curves use the start frame)")
+    axis.set_ylabel("TD Advantage")
+    axis.grid(alpha=0.2)
+    weight_axis.set_ylabel("Loss weight", color="C2")
+    weight_axis.tick_params(axis="y", labelcolor="C2")
+    weight_axis.set_ylim(-0.02, 1.02)
+    weight_axis.legend(handles=[raw_line, chunk_line, weight_line], loc="best", framealpha=1)
+    figure.savefig(path, dpi=140)
+
+
+def _export_episodes(traces, renders, output, selected, scores=None):
     from gear_sonic.data.exporter import Gr00tDataExporter
     from gear_sonic.data.features_sonic_vla import (
         get_features_sonic_vla,
@@ -48,6 +114,8 @@ def _export_episodes(traces, renders, output, selected):
         "next.done": dict(dtype="bool", shape=(1,), names=None),
         "source.episode_index": dict(dtype="int64", shape=(1,), names=None),
     })
+    if scores is not None:
+        features["td_advantage"] = dict(dtype="float32", shape=(1,), names=None)
     full_modality = get_modality_config_sonic_vla(robot)
     modality = {
         "state": {key: value for key, value in full_modality["state"].items()
@@ -63,6 +131,9 @@ def _export_episodes(traces, renders, output, selected):
         save_root=output, fps=50, features=features, modality_config=modality,
         task=scene["task"], script_config=scene, robot_type="unitree_g1_sonic", preencoded_videos=True,
     )
+    if scores is not None:
+        advantage_debug = output / "debug" / "advantage"
+        advantage_debug.mkdir(parents=True)
     model_path = None
     mapping = []
     outcomes = []
@@ -101,11 +172,19 @@ def _export_episodes(traces, renders, output, selected):
             "next.done": (np.arange(n) == n - 1)[:, None],
             "source.episode_index": np.full((n, 1), meta["episode_index"], dtype=np.int64),
         }
+        if scores is not None:
+            columns["td_advantage"] = load_td_advantage(scores[path.parent.name]["local_score"], trace)
         exporter.save_preencoded_episode(
             columns, {"observation.images.ego_view": rendered / "ego_view.mp4"},
             {"observation.images.ego_view": info["video_stats"]}, task=meta["task"],
         )
-        entry = dict(episode_index=exporter.meta.total_episodes - 1,
+        episode_index = exporter.meta.total_episodes - 1
+        if scores is not None:
+            save_advantage_plot(
+                advantage_debug / f"episode_{episode_index:06d}.png",
+                columns["td_advantage"], episode_index, meta["episode_index"],
+            )
+        entry = dict(episode_index=episode_index,
                      source_episode_index=meta["episode_index"], label=meta["label"],
                      source=str(path.resolve()))
         if "object_key" in meta:

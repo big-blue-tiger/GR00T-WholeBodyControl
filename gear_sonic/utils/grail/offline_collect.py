@@ -27,11 +27,14 @@ def json_default(value):
 
 
 def gpu_memory():
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-        capture_output=True, text=True,
-    )
-    return int(result.stdout.splitlines()[0]) if result.returncode == 0 else None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return None
+    return int(result.stdout.splitlines()[0]) if result.returncode == 0 and result.stdout.strip() else None
 
 
 class Decoder:
@@ -163,10 +166,7 @@ def receive(connection):
 
 
 def collect(args):
-    import torch
-
     from .checkpoints import resolve_checkpoint
-    from .policy import GrailActor, GrailPolicy, finger_targets
 
     keys = collection_objects(args.dataset_dir, args.object_key, args.cache_dir)
     episodes_per_object = args.episodes_per_object
@@ -182,10 +182,6 @@ def collect(args):
         raise FileExistsError(f"collection directory already contains episodes: {output}")
     print(f"[Collect] Checkpoint: {args.checkpoint}", flush=True)
     print(f"[Collect] {len(keys)} objects × {episodes_per_object} episodes = {num_episodes}", flush=True)
-    torch.set_num_threads(args.threads)
-    policy = GrailPolicy(args.checkpoint, args.device)
-    policy(np.zeros((args.num_envs, 5, 161)), np.zeros((args.num_envs, 79)))
-    actor = GrailActor(policy, release_override=not args.no_release_override)
     output.mkdir(parents=True, exist_ok=True)
     scene_dirs = {key: output / "objects" / key if len(keys) > 1 else output for key in keys}
     if len(keys) > 1:
@@ -203,27 +199,49 @@ def collect(args):
             prepared.add(key)
         return env_id, episode, args.seed + episode, str(directory)
 
+    stats = run_collection(args, output, num_episodes, reset_assignment, steps=steps)
+    stats.update(num_objects=len(keys), episodes_per_object=episodes_per_object)
+    (output / "collection_metrics.json").write_text(json.dumps(stats, indent=2))
+    print(json.dumps(stats, indent=2), flush=True)
+    return stats
+
+
+def run_collection(args, output, num_episodes, reset_assignment, *, steps=None):
+    import torch
+
+    from .policy import GrailActor, GrailPolicy, finger_targets
+
+    num_envs = min(args.num_envs, num_episodes)
+    count = min(args.cpu_workers, num_envs)
+    torch.set_num_threads(args.threads)
+    policy = GrailPolicy(args.checkpoint, args.device)
+    policy(np.zeros((num_envs, 5, 161)), np.zeros((num_envs, 79)))
+    actor = GrailActor(policy, release_override=not args.no_release_override)
+    worker_options = dict(output=str(output), steps=steps)
+    operation, label = "reset", "Collect"
+    if steps is None:
+        operation, label = "recover", "Recovery"
+        worker_options["hand_primitives"] = np.asarray([
+            finger_targets(np.full(66, sign), policy.config) for sign in (-1., 1.)
+        ])
     ctx = mp.get_context("spawn")
-    count = min(args.cpu_workers, args.num_envs)
     connections, processes, env_workers = [], [], {}
     decoder = None
     timings = dict(policy_s=0., decoder_roundtrip_s=0., decoder_inference_s=0., worker_wait_s=0.)
     cpu_start, start = time.process_time(), time.perf_counter()
-    completed, next_episode, snapshots = 0, args.num_envs, []
+    completed, transitions, next_episode, snapshots = 0, 0, num_envs, []
     try:
         decoder = Decoder(args.decoder_executable.resolve(), args.decoder_model.resolve(), output / "decoder.log")
         for worker in range(count):
             parent, child = ctx.Pipe()
-            ids = list(range(worker, args.num_envs, count))
+            ids = list(range(worker, num_envs, count))
             env_workers.update({env_id: worker for env_id in ids})
-            process = ctx.Process(target=simulation_worker, args=(
-                child, dict(output=str(output), steps=steps),
-            ))
+            process = ctx.Process(target=simulation_worker, args=(child, worker_options))
             process.start()
             child.close()
             connections.append(parent)
             processes.append(process)
-            parent.send(("reset", [reset_assignment(i, i) for i in ids]))
+            parent.send((operation, [reset_assignment(i, i) for i in ids]))
         for connection in connections:
             snapshots.extend(receive(connection))
         last_report = time.perf_counter()
@@ -242,6 +260,8 @@ def collect(args):
             tick = time.perf_counter()
             replies = decoder(requests)
             timings["decoder_roundtrip_s"] += time.perf_counter() - tick
+            if len(replies) != len(requests):
+                raise RuntimeError("decoder reply count does not match the request batch")
             timings["decoder_inference_s"] += sum(r["inference_s"] for r in replies)
             batches = [[] for _ in connections]
             for sample, reply, expert, action in zip(snapshots, replies, experts, actions):
@@ -258,7 +278,8 @@ def collect(args):
                 for result in receive(connection):
                     if result.get("done"):
                         completed += 1
-                        print(f"[Collect] {completed}/{num_episodes}: {result['episode']}", flush=True)
+                        transitions += result["transitions"]
+                        print(f"[{label}] {completed}/{num_episodes}: {result['episode']}", flush=True)
                         if next_episode < num_episodes:
                             replacements[worker].append(reset_assignment(result["env_id"], next_episode))
                             next_episode += 1
@@ -266,7 +287,7 @@ def collect(args):
                         snapshots.append(result)
             for connection, replacement in zip(connections, replacements):
                 if replacement:
-                    connection.send(("reset", replacement))
+                    connection.send((operation, replacement))
             for connection, replacement in zip(connections, replacements):
                 if replacement:
                     snapshots.extend(receive(connection))
@@ -275,7 +296,7 @@ def collect(args):
                 memory = gpu_memory()
                 if memory is not None:
                     peak_gpu = max(peak_gpu or 0, memory)
-                print(f"[Collect] active={len(snapshots)} completed={completed}; GPU={memory} MiB", flush=True)
+                print(f"[{label}] active={len(snapshots)} completed={completed}; GPU={memory} MiB", flush=True)
                 last_report = time.perf_counter()
         # Read while the server is still alive and waiting for its shutdown request.
         decoder_stat = Path(f"/proc/{decoder.process.pid}/stat").read_text().rpartition(")")[2].split()
@@ -290,11 +311,9 @@ def collect(args):
         for process in processes:
             process.join()
         elapsed = time.perf_counter() - start
-        n = completed * steps
         stats = dict(
-            num_envs=args.num_envs, cpu_workers=count, episodes=completed, transitions=n,
-            num_objects=len(keys), episodes_per_object=episodes_per_object,
-            wall_s=elapsed, physics_steps_per_second=n * 4 / elapsed,
+            num_envs=num_envs, cpu_workers=count, episodes=completed, transitions=transitions,
+            wall_s=elapsed, physics_steps_per_second=transitions * 4 / elapsed,
             episodes_per_hour=completed * 3600 / elapsed, timing=timings, workers=workers,
             parent_cpu_s=time.process_time() - cpu_start,
             parent_peak_rss_mib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
@@ -309,8 +328,6 @@ def collect(args):
         stats["measured_cpu_utilization_percent"] = (
             100 * stats["measured_cpu_core_equivalents"] / stats["cpu_affinity_count"]
         )
-        (output / "collection_metrics.json").write_text(json.dumps(stats, indent=2))
-        print(json.dumps(stats, indent=2), flush=True)
         return stats
     finally:
         for connection in connections:

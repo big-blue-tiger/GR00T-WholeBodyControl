@@ -7,10 +7,21 @@
 #include "control_policy.hpp"
 #include "simulation_control.hpp"
 
+struct RecordedAction {
+    std::vector<double> raw, targets;
+    MSGPACK_DEFINE_MAP(raw, targets);
+};
+struct RecordedFrame {
+    std::vector<double> q, dq, quat, angular;
+    RecordedAction previous;
+    MSGPACK_DEFINE_MAP(q, dq, quat, angular, previous);
+};
 struct Request {
     int env_id, episode_id, step;
     std::vector<double> q, dq, quat, angular, hand_q, action;
-    MSGPACK_DEFINE_MAP(env_id, episode_id, step, q, dq, quat, angular, hand_q, action);
+    std::vector<RecordedFrame> history;
+    RecordedAction previous;
+    MSGPACK_DEFINE_MAP(env_id, episode_id, step, q, dq, quat, angular, hand_q, action, history, previous);
 };
 struct Reply {
     int env_id, episode_id, step;
@@ -42,6 +53,16 @@ int main(int argc, char** argv) try {
         for (const auto& request: requests) {
             if (request.hand_q.size()!=14) throw std::runtime_error("expected 14 measured hand joints");
             auto& context = contexts[request.env_id];
+            if (!request.history.empty()) {
+                std::vector<SimulationFrame> frames;
+                frames.reserve(request.history.size());
+                for (const auto& frame : request.history) {
+                    frames.push_back(simulation_frame(frame.q, frame.dq, frame.quat, frame.angular,
+                        recorded_body_action(frame.previous.raw, frame.previous.targets)));
+                }
+                context.seed(request.episode_id, request.step, frames,
+                    recorded_body_action(request.previous.raw, request.previous.targets));
+            }
             Reply reply;
             reply.env_id=request.env_id; reply.episode_id=request.episode_id; reply.step=request.step;
             reply.observation=context.observe(request.episode_id, request.step, request.q,

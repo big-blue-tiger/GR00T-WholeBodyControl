@@ -106,3 +106,32 @@ python -m gear_sonic.scripts.run_camera_viewer \
 仿真期间写入原始轨迹和 50 fps H.264 合成画面录像，异步预览复用同一份视频编码。在仿真终端按 **Ctrl+C** 停止轮换。启动脚本会等仿真进程退出，再用 GRAIL 的离线导出器将已完成的成功和失败回合写成 LeRobot v2.1。
 
 终端显示 `[Export] ... episodes -> <导出目录>` 后，从该目录读取数据集。其中 `data/`、`videos/` 和 `meta/` 的结构、字段和模态与 GRAIL 红桶数据集一致。旧运行可从原始轨迹和录像补导。[输出与手动导出](grail_offline.md#导出-gr00t-在线回合)
+
+## 6. 离线接管与轨迹版本
+
+先对运行目录下的原始轨迹评分。在有原运行目录的机器上，使用 `gr00t-sim` 环境运行。
+
+```bash
+python -m gear_sonic.scripts.grail_offline recovery \
+  --run-dir outputs/gr00t_rollouts/20261125_191637-18053 \
+  --output-dir outputs/gr00t_rollouts/20261125_191637-18053/traces_recovery \
+  --num-envs 4 --cpu-workers 4
+```
+
+默认读取运行目录下的 `gr00t_reward_value_scores/episodes.jsonl`，可用 `--value-scores` 指定其他评分目录。上例中的 `--output-dir` 与默认的 `<run-dir>/traces_recovery/` 一致，可以省略。可用 `--episode 0` 配合单独的输出目录验证单个回合。有接管建议的回合从评分指定的状态边界切换到 GRAIL，运行到原回合终点。其余回合复制到输出目录。[离线评分命令](grail_offline.md#离线评估接管时刻)
+
+中断后，用原来的输入、评分和模型设置加上 `--resume`。命令跳过已经完整写入的回合，从头生成中途停止的回合。
+
+```bash
+python -m gear_sonic.scripts.grail_offline recovery \
+  --run-dir outputs/gr00t_rollouts/20261125_191637-18053 \
+  --resume-from outputs/gr00t_rollouts/20261125_191637-18053/.traces_recovery-tuuxnwvs --num-envs 4 --cpu-workers 4
+```
+
+首次运行时，输出目录旁的 `.<输出目录名>.partial/` 保留已完成的回合，全部完成后发布到输出目录。`--resume` 也可以继续补齐已经发布的输出目录。旧版进程停止后若留下与输出目录同级的 `.traces_recovery-*` 临时目录，可用 `--resume-from <临时目录>` 接续。命令会将旧临时目录移到新版的续跑位置，之后再次中断时可用 `--resume`。
+
+**升级提醒。** 同步服务器代码后，重新编译 `grail_offline_decoder`，使它能接收接管前的历史。新版 GR00T 每个状态边界保存 MuJoCo 积分状态 `mujoco_state`，每个动作步保存 decoder 原始输出 `decoder_action`。接管时直接恢复保存的积分状态，包括机器人和物体的位姿、速度、mocap、仿真时钟及求解器热启动数据。[编译命令](../getting_started/grail_environment.md)
+
+旧轨迹使用保存的 `command_q`、`command_dq`、`command_kp`、`command_kd` 和 `command_tau` 回放，在每个控制边界对齐原始记录，恢复 MuJoCo 接触求解热启动和任务状态。接管前最后一步在对齐前比较回放结果与记录。只要 `qpos` 的最大分量误差超过 `1e-4`，或 `qvel` 的最大分量误差超过 `1e-2`，命令就会报出回合和步号并停止发布结果。
+
+接管时，仿真沿用原场景、物体和释放目标。若任务状态已经确认掉落，GRAIL 从当前物理状态重新进入抓取阶段。首拍沿用上一步 GR00T 的关节命令，随后在 10 个控制周期内平滑切换到 GRAIL。

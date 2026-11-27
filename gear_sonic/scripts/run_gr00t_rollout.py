@@ -97,6 +97,8 @@ def submit_observation(worker, socket, env, rgb):
 def run_episode(env, visual, decoder, infer, encode, pending, *, synchronous=False, check_stop=None):
     import numpy as np
 
+    env.record_integration_state()
+    env.trace["decoder_action"] = np.empty((env.steps, 29), dtype=np.float32)
     env.trace["observation_step"] = np.empty(env.steps, dtype=np.int32)
     env.trace["chunk_index"] = np.empty(env.steps, dtype=np.int32)
     env.trace["held_action"] = np.empty(env.steps, dtype=bool)
