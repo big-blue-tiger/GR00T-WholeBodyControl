@@ -7,6 +7,8 @@ import sys
 
 import numpy as np
 
+from gear_sonic.utils.grail.rollout_manifest import checkpoint_identity
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -37,6 +39,7 @@ def main():
 
     torch.set_num_threads(4)
     print(f"[GR00T] Loading {model} on {args.device}", flush=True)
+    checkpoint = checkpoint_identity(model)
     policy = Gr00tPolicy("UNITREE_G1_SONIC", str(model), device=args.device)
     active_episode = None
 
@@ -80,6 +83,7 @@ def main():
 
     with PolicyServer(policy, host="127.0.0.1", port=args.port) as server:
         server.register_endpoint("get_action_rgb", get_action_rgb)
+        server.register_endpoint("get_checkpoint_identity", lambda: {"checkpoint": checkpoint}, requires_input=False)
         if args.ready_file is not None:
             args.ready_file.touch()
         server.run()

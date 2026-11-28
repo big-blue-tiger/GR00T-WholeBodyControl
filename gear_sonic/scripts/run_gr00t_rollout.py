@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+import fcntl
 from functools import partial
 from itertools import count, groupby
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+from tempfile import TemporaryDirectory, mkdtemp
 import time
 import traceback
 
@@ -182,6 +184,16 @@ def assigned_object_runs(args, keys, worker_index):
         yield keys[object_index % len(keys)], run
 
 
+def episode_runs(args, keys, worker_index):
+    if args.episode_manifest is None:
+        for key, episodes in assigned_object_runs(args, keys, worker_index):
+            yield key, ((ep, args.seed + ep, None) for ep in episodes)
+    else:
+        cases = (ep for ep in args.pending_cases if ep["episode_index"] % args.num_envs == worker_index)
+        for key, episodes in groupby(cases, key=lambda ep: ep["object_key"]):
+            yield key, ((ep["episode_index"], ep["seed"], ep) for ep in episodes)
+
+
 def collect(args, app, keys, check_stop):
     import zmq
 
@@ -189,6 +201,7 @@ def collect(args, app, keys, check_stop):
     from gear_sonic.utils.grail.offline_collect import Decoder, prepare_scene
     from gear_sonic.utils.grail.offline_render import scene_assets
     from gear_sonic.utils.grail.offline_sim import OfflineEnvironment, load_environment_scene
+    from gear_sonic.utils.grail.rollout_manifest import check_placement
     from gear_sonic.utils.mujoco_sim.isaac_visual import IsaacVisual
 
     traces, renders = args.output / "traces", args.output / "renders"
@@ -196,8 +209,9 @@ def collect(args, app, keys, check_stop):
     work_dir, objects_dir = args.output, traces / "objects"
     if args.worker_index is not None:
         work_dir = args.output / "workers" / str(worker_index)
-        work_dir.mkdir(parents=True)
-        objects_dir = work_dir / "objects"
+        work_dir.mkdir(parents=True, exist_ok=args.episode_manifest is not None)
+        if args.episode_manifest is None:
+            objects_dir = work_dir / "objects"
     synchronous = args.inference_mode == "sync"
     with ExitStack() as stack:
         transport = stack.enter_context(zmq.Context())
@@ -216,8 +230,8 @@ def collect(args, app, keys, check_stop):
             print(f"[GR00T] H.264 preview listening on {args.preview_port}", flush=True)
 
         visual, pending = None, None
-        prepared = set()
-        for key, episodes in assigned_object_runs(args, keys, worker_index):
+        prepared = set(keys) if args.episode_manifest is not None else set()
+        for key, episodes in episode_runs(args, keys, worker_index):
             check_stop()
             scene_dir = objects_dir / key
             if key not in prepared:
@@ -243,9 +257,13 @@ def collect(args, app, keys, check_stop):
             else:
                 visual.scene.set_object(model, source)
 
-            for episode in episodes:
+            for episode, seed, case in episodes:
                 check_stop()
-                env.start_episode(episode, args.seed + episode)
+                env.start_episode(episode, seed)
+                if case is not None:
+                    if env.task_description != case["task"]:
+                        raise ValueError(f"Episode {episode} task differs from the frozen placement")
+                    check_placement(case, env.reset_details, env.data.qpos[:7])
                 print(f"[GR00T] Episode {episode} · {key} · {env.task_description}", flush=True)
                 video = encoder.submit(
                     EpisodeVideo, renders / f"episode_{episode:06d}", f"{args.output.name}:{episode}", preview,
@@ -266,7 +284,8 @@ def collect(args, app, keys, check_stop):
         decoder([])
 
 
-def run_workers(command, num_workers, output):
+def run_workers(command, worker_indices, output, *, lock_fd=None):
+    worker_indices = tuple(worker_indices)
     workers = []
     stopping = False
     failed = False
@@ -281,12 +300,13 @@ def run_workers(command, num_workers, output):
             signals.callback(signal.signal, signum, previous)
         try:
             workers_dir = output / "workers"
-            for index in range(num_workers):
+            for position, index in enumerate(worker_indices, 1):
                 if stopping:
                     break
-                print(f"[GR00T] Warming up worker {index + 1}/{num_workers}", flush=True)
+                print(f"[GR00T] Warming up worker {position}/{len(worker_indices)} (slot {index})", flush=True)
                 workers.append(subprocess.Popen(
                     [*command, "--worker-index", str(index)], start_new_session=True,
+                    pass_fds=(lock_fd,) if lock_fd is not None else (),
                 ))
                 ready = workers_dir / str(index) / "ready"
                 deadline = time.monotonic() + 360
@@ -308,7 +328,7 @@ def run_workers(command, num_workers, output):
             for worker in terminating:
                 worker.terminate()
             deadline = time.monotonic() + 30
-            for index, worker in enumerate(workers):
+            for index, worker in zip(worker_indices, workers):
                 try:
                     status = worker.wait(timeout=max(0, deadline - time.monotonic()))
                 except subprocess.TimeoutExpired:
@@ -371,6 +391,104 @@ def run_simulation(args, keys):
         app.close(wait_for_replicator=False)
 
 
+def confirm_policy_server(args, expected):
+    import msgpack
+    import zmq
+
+    with zmq.Context() as context, policy_connection(context, args.port) as socket:
+        socket.send(msgpack.packb({"endpoint": "get_checkpoint_identity"}, use_bin_type=True))
+        try:
+            reply = msgpack.unpackb(socket.recv(), raw=False)
+        except zmq.Again as error:
+            raise TimeoutError(f"GR00T policy server is not ready on port {args.port}") from error
+        if reply.get("checkpoint") != expected:
+            raise ValueError(f"Policy server on port {args.port} does not serve {expected['path']}")
+
+
+def prepare_pending_cases(args, pending, lock_fd):
+    from gear_sonic.utils.grail.offline_collect import prepare_scene
+    from gear_sonic.utils.grail.render_pipeline import atomic_json
+    from gear_sonic.utils.grail.rollout_manifest import episode_artifacts
+
+    output = args.output
+    objects = output / "traces" / "objects"
+    objects.mkdir(exist_ok=True)
+    for key in dict.fromkeys(ep["object_key"] for ep in pending):
+        scene = objects / key
+        if not scene.exists():
+            # Build at the same directory depth so the scene's relative asset paths stay valid.
+            with TemporaryDirectory(dir=objects) as temporary:
+                staging = Path(temporary)
+                prepare_scene(args, staging, key)
+                staging.rename(scene)
+
+    for ep in pending:
+        artifacts = [path for path in episode_artifacts(output, ep["episode_index"])
+                     if path.exists() or path.is_symlink()]
+        if artifacts:
+            archive = output / "incomplete"
+            archive.mkdir(exist_ok=True)
+            directory = Path(mkdtemp(prefix=f"episode_{ep['episode_index']:06d}-", dir=archive))
+            for path in artifacts:
+                path.rename(directory / path.parent.name)
+
+    indices = sorted({ep["episode_index"] % args.num_envs for ep in pending})
+    (output / "workers" / "start").unlink(missing_ok=True)
+    for index in indices:
+        (output / "workers" / str(index) / "ready").unlink(missing_ok=True)
+    atomic_json(output / "pending_cases.json", pending)
+    command = [sys.executable, "-u", "-m", "gear_sonic.scripts.run_gr00t_rollout", *sys.argv[1:]]
+    return run_workers(command, indices, output, lock_fd=lock_fd)
+
+
+def run_manifest(args):
+    from gear_sonic.utils.grail.offline_collect import collection_objects
+    from gear_sonic.utils.grail.offline_render import digest_file
+    from gear_sonic.utils.grail.render_pipeline import atomic_json
+    from gear_sonic.utils.grail.rollout_manifest import (
+        checkpoint_identity, json_digest, load_manifest, pending_episodes, read_json, scene_identity,
+    )
+
+    manifest = load_manifest(args.episode_manifest)
+    if manifest["scene_inputs"] != scene_identity(args):
+        raise ValueError("The initial pose, scene config or robot model differs from the manifest")
+    episodes = manifest["episodes"]
+    checkpoint = checkpoint_identity(args.checkpoint)
+    identity = dict(manifest_sha256=json_digest(manifest), checkpoint=checkpoint,
+                    decoder_sha256=digest_file(args.decoder_model), steps=args.steps, task=args.task)
+    keys = collection_objects(args.dataset_dir, (ep["object_key"] for ep in episodes), args.cache_dir)
+    if not args.resume:
+        args.output.mkdir(parents=True)
+    if not args.output.is_dir():
+        raise FileNotFoundError(f"Missing evaluation run: {args.output}")
+
+    with (args.output / ".rollout.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f"Evaluation run already active: {args.output}") from error
+        record = args.output / "evaluation_run.json"
+        if args.resume:
+            if read_json(record) != identity:
+                raise ValueError("Cannot resume with a different manifest, checkpoint or rollout configuration")
+        else:
+            atomic_json(record, identity)
+        traces = args.output / "traces"
+        traces.mkdir(exist_ok=True)
+        atomic_json(traces / "scene.json", dict(task=args.task, policy="gr00t", objects=keys))
+        pending = pending_episodes(args.output, episodes, args.checkpoint, args.steps)
+        print(f"[GR00T] {len(episodes) - len(pending)} complete, {len(pending)} pending", flush=True)
+        if not pending:
+            return 0
+        confirm_policy_server(args, checkpoint)
+        status = prepare_pending_cases(args, pending, lock.fileno())
+        remaining = pending_episodes(args.output, episodes, args.checkpoint, args.steps)
+        if remaining:
+            print(f"[GR00T] Evaluation incomplete ({len(remaining)} pending); resume this run",
+                  file=sys.stderr, flush=True)
+        return status or int(bool(remaining))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -379,6 +497,8 @@ def main():
     )
     parser.add_argument("--dataset-dir", type=Path, default=ROOT / "gear_sonic/data/grail/100obj")
     parser.add_argument("--object-key", action="append")
+    parser.add_argument("--episode-manifest", type=Path, help="Frozen cases for synchronous evaluation")
+    parser.add_argument("--resume", action="store_true", help="Continue a run using the same evaluation manifest")
     parser.add_argument(
         "--cycle-objects", action="store_true",
         help=(
@@ -424,19 +544,33 @@ def main():
         parser.error("--episodes-per-object must be positive")
     if args.num_envs == 4 and args.inference_mode != "sync":
         parser.error("--num-envs 4 requires --inference-mode sync")
-    if args.worker_index is not None and args.num_envs != 4:
-        parser.error("--worker-index requires --num-envs 4")
+    if args.worker_index is not None and args.worker_index >= args.num_envs:
+        parser.error("--worker-index must be smaller than --num-envs")
+    if args.worker_index is not None and args.num_envs != 4 and args.episode_manifest is None:
+        parser.error("--worker-index without a manifest requires --num-envs 4")
     if args.inference_mode == "async" and args.port == args.preview_port:
         parser.error("policy and preview ports must be distinct in async mode")
     if args.cycle_objects and args.episodes_per_object != 1:
         parser.error("--cycle-objects requires one episode per object per pass")
-    if not args.cycle_objects and args.object_key is None:
+    if args.episode_manifest is not None:
+        if args.inference_mode != "sync" or args.cycle_objects or args.object_key or args.episodes_per_object != 1:
+            parser.error("--episode-manifest requires sync and supplies its own object selection and quotas")
+    elif args.resume:
+        parser.error("--resume requires --episode-manifest")
+    elif not args.cycle_objects and args.object_key is None:
         args.object_key = ["pickup_table__alcohol_10__001"]
     args.output = args.output.resolve()
     args.dataset_dir = args.dataset_dir.resolve()
     args.checkpoint = args.model_dir.resolve()
     args.no_release_override = True
 
+    if args.episode_manifest is not None:
+        if args.worker_index is None:
+            return run_manifest(args)
+        args.pending_cases = json.loads((args.output / "pending_cases.json").read_text())
+        scene = json.loads((args.output / "traces" / "scene.json").read_text())
+        run_simulation(args, scene["objects"])
+        return 0
     if args.num_envs == 1:
         run_simulation(args, None)
         return 0
@@ -446,7 +580,7 @@ def main():
         if not args.cycle_objects:
             num_workers = min(num_workers, len(keys) * args.episodes_per_object)
         command = [sys.executable, "-u", "-m", "gear_sonic.scripts.run_gr00t_rollout", *sys.argv[1:]]
-        return run_workers(command, num_workers, args.output)
+        return run_workers(command, range(num_workers), args.output)
     scene = json.loads((args.output / "traces" / "scene.json").read_text())
     run_simulation(args, scene["objects"])
     return 0

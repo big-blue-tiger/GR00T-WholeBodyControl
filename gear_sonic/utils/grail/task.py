@@ -9,10 +9,11 @@ from .plan import PLAN_FPS
 RELEASE_ENTER_DISTANCE_M = 0.20
 RELEASE_EXIT_DISTANCE_M = 0.30
 RELEASE_DWELL_S = 0.5
+CONTACT_STABLE_STEPS = 3
 
 
 class CarryTask:
-    def __init__(self, plan, settle_s=2.0, dt=0.02, threshold=0.1, stable_steps=3,
+    def __init__(self, plan, settle_s=2.0, dt=0.02, threshold=0.1, stable_steps=CONTACT_STABLE_STEPS,
                  *, release_by_distance=True):
         self.plan = plan
         self.dt = dt

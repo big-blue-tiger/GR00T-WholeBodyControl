@@ -21,6 +21,30 @@ from gear_sonic.utils.grail.checkpoints import DEFAULT_CHECKPOINT, resolve_check
 from gear_sonic.utils.grail.gr00t_recovery import RecoveryConfig, RecoveryGate
 from gear_sonic.utils.grail.offline_data import episodes, load_episode
 from gear_sonic.utils.grail.offline_sim import COMMAND_KEYS, COMMAND_NAMES, OfflineEnvironment, load_boundary
+from gear_sonic.utils.grail.task import CONTACT_STABLE_STEPS
+
+RELEASE_ADVANTAGE_DISTANCE_M = 0.3
+RELEASE_ADVANTAGE_LEAD_FRAMES = 3
+RELEASE_ADVANTAGE_RULE = 2
+
+
+def final_release_start(carrying, target_distance_m):
+    """Find the start of the score tail to zero for a near-target release."""
+    if len(carrying) < CONTACT_STABLE_STEPS:
+        return None
+    contacts = np.lib.stride_tricks.sliding_window_view(carrying, CONTACT_STABLE_STEPS).sum(axis=-1)
+    held = np.flatnonzero(contacts == CONTACT_STABLE_STEPS)
+    if not held.size:
+        return None
+    after_hold = held[-1] + CONTACT_STABLE_STEPS
+    released = np.flatnonzero(contacts[after_hold:] == 0)
+    if not released.size:
+        return None
+    first_clear = after_hold + released[0]
+    if target_distance_m[first_clear - 1] <= RELEASE_ADVANTAGE_DISTANCE_M:
+        confirmed = first_clear + CONTACT_STABLE_STEPS - 1
+        return max(0, confirmed - RELEASE_ADVANTAGE_LEAD_FRAMES)
+    return None
 
 
 def replay(env, metadata, trace, scorer):
@@ -77,6 +101,9 @@ def replay(env, metadata, trace, scorer):
             result[key][i] = getattr(env.task, key)
         if recovery.get("regrasp") and recovery["step"] == env.step_index:
             env.restart_pickup()
+    start = final_release_start(result["carrying"], result["target_distance_m"])
+    if start is not None:
+        result["td_advantage"][start:] = 0.0
     return result, decision
 
 
@@ -167,6 +194,32 @@ def complete_score(job, row, checkpoint_files):
         return False
 
 
+def write_score(path, result):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".npz.tmp")
+    with temporary.open("wb") as file:
+        np.savez_compressed(file, **result)
+    temporary.replace(path)
+
+
+def upgrade_legacy_score(job, row):
+    # Previous scores already include the two diagnostics needed by this rule.
+    try:
+        with np.load(job.target, allow_pickle=False) as cached:
+            carrying, distance = cached["carrying"], cached["target_distance_m"]
+            if carrying.shape != (job.transitions,) or distance.shape != (job.transitions,):
+                return False
+            start = final_release_start(carrying, distance)
+            updated = dict(cached) if start is not None and np.any(cached["td_advantage"][start:] != 0) else None
+    except (OSError, EOFError, ValueError, KeyError, TypeError, BadZipFile):
+        return False
+    if updated is not None:
+        updated["td_advantage"][start:] = 0.0
+        write_score(job.target, updated)
+    row["release_advantage_rule"] = RELEASE_ADVANTAGE_RULE
+    return True
+
+
 def write_manifest(path, rows, source_order):
     def order(row):
         trace = Path(row["trace"])
@@ -215,12 +268,17 @@ def run_scoring(args, jobs, roots):
             source_order.setdefault(path.parent.parent, len(source_order))
 
     pending = []
+    upgraded = 0
     for job in jobs:
         row = rows.get(job.target)
         if targets.get(job.path, job.target) != job.target or (row and row["trace"] != str(job.path)):
             raise ValueError(f"output layout or trace does not match {manifest}: {job.target}")
         if args.resume and complete_score(job, row, checkpoint_files):
-            continue
+            if row.get("release_advantage_rule") == RELEASE_ADVANTAGE_RULE:
+                continue
+            if row.get("release_advantage_rule") in (None, 1) and upgrade_legacy_score(job, row):
+                upgraded += 1
+                continue
         if not args.resume and job.target.exists():
             raise FileExistsError(f"{job.target} already exists; use --resume or a new --output")
         rows.pop(job.target, None)
@@ -229,6 +287,8 @@ def run_scoring(args, jobs, roots):
     workers = min(args.workers, len(pending))
     skipped = len(jobs) - len(pending)
     print(f"[Score] {checkpoint} | {len(pending)} pending, {skipped} skipped, {workers} workers", flush=True)
+    if upgraded:
+        print(f"[Score] Applied the release Advantage rule to {upgraded} existing scores", flush=True)
     write_manifest(manifest, rows, source_order)
     if not pending:
         return
@@ -236,15 +296,12 @@ def run_scoring(args, jobs, roots):
     # Only the parent publishes files. Each atomic index update follows its score file.
     with closing(scored_jobs(pending, checkpoint, workers)) as results:
         for completed, (job, (result, decision, gamma)) in enumerate(results, start=1):
-            job.target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = job.target.with_suffix(".npz.tmp")
-            with temporary.open("wb") as file:
-                np.savez_compressed(file, **result)
-            temporary.replace(job.target)
+            write_score(job.target, result)
             rows[job.target] = dict(
                 trace=str(job.path), score=str(job.target), episode_index=job.episode_index,
                 checkpoint=str(checkpoint), gamma=gamma, recovery_decision=decision,
                 checkpoint_signature=checkpoint_signature, inputs=job.inputs,
+                release_advantage_rule=RELEASE_ADVANTAGE_RULE,
             )
             write_manifest(manifest, rows, source_order)
             print(f"[Score] {skipped + completed}/{len(jobs)} {job.target.relative_to(args.output)}", flush=True)

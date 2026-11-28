@@ -17,14 +17,6 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
 
   output=${OUTPUT_DIR:-"outputs/gr00t_rollouts/$(date +%Y%m%d_%H%M%S)-$$"}
   export_dir=${EXPORT_DIR:-"$output/dataset"}
-  mkdir -p -- "$(dirname -- "$output")"
-  mkdir -- "$output"
-  if [[ -e $export_dir || -L $export_dir ]]; then
-    printf 'Export destination already exists: %s\n' "$export_dir" >&2
-    exit 1
-  fi
-  printf 'Starting simulation with GR00T at 127.0.0.1:%s. Output %s\n' "$GR00T_PORT" "$output"
-
   object_args=()
   cache_args=()
   if [[ -n ${OBJECT_KEY:-} ]]; then
@@ -33,6 +25,32 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
   if [[ -n ${GRAIL_CACHE_DIR:-} ]]; then
     cache_args=(--cache-dir "$GRAIL_CACHE_DIR")
   fi
+  rollout=(
+    "$SIM_PYTHON" -u -m gear_sonic.scripts.run_gr00t_rollout
+    --dataset-dir "${DATASET_DIR:-gear_sonic/data/grail/100obj}"
+    --initial-pose "${INITIAL_POSE:-gear_sonic/config/grail/carry_initial_pose.json}"
+    --seed "${GRAIL_SEED:-42}" "${object_args[@]}" "${cache_args[@]}"
+    "$@" --output "$output" --model-dir "$MODEL_DIR" --port "$GR00T_PORT"
+  )
+  manifest_mode=0
+  for arg in "$@"; do
+    case "$arg" in
+      --episode-manifest|--episode-manifest=*)
+        manifest_mode=1
+        break
+        ;;
+    esac
+  done
+
+  if [[ -e $export_dir || -L $export_dir ]]; then
+    printf 'Export destination already exists: %s\n' "$export_dir" >&2
+    exit 1
+  fi
+  if (( ! manifest_mode )); then
+    mkdir -p -- "$(dirname -- "$output")"
+    mkdir -- "$output"
+  fi
+  printf 'Starting simulation with GR00T at 127.0.0.1:%s. Output %s\n' "$GR00T_PORT" "$output"
   rollout_pid=
   stopping=0
   stop_rollout() {
@@ -49,11 +67,7 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
   (
     # The launcher handles terminal Ctrl+C and forwards a single stop signal.
     trap '' INT
-    exec "$SIM_PYTHON" -u -m gear_sonic.scripts.run_gr00t_rollout \
-      --dataset-dir "${DATASET_DIR:-gear_sonic/data/grail/100obj}" \
-      --initial-pose "${INITIAL_POSE:-gear_sonic/config/grail/carry_initial_pose.json}" \
-      --seed "${GRAIL_SEED:-42}" "${object_args[@]}" "${cache_args[@]}" \
-      "$@" --output "$output" --model-dir "$MODEL_DIR" --port "$GR00T_PORT"
+    exec "${rollout[@]}"
   ) &
   rollout_pid=$!
   if (( stopping )); then
@@ -71,7 +85,7 @@ if [[ ${POLICY_BACKEND:-grail} == gr00t ]]; then
 
   shopt -s nullglob
   completed_episodes=("$output"/traces/episode_*/episode.json)
-  if (( ${#completed_episodes[@]} )); then
+  if (( ${#completed_episodes[@]} && (! manifest_mode || status == 0) )); then
     printf 'Exporting completed episodes to %s\n' "$export_dir"
     "$SIM_PYTHON" -u -m gear_sonic.scripts.grail_offline export \
       --traces "$output/traces" --renders "$output/renders" --output "$export_dir" --labels all

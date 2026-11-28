@@ -102,9 +102,7 @@ class Decoder:
         self.directory.cleanup()
 
 
-def prepare_scene(args, output, object_key):
-    import mujoco
-
+def build_offline_scene(args, object_key):
     from .observations import rotation
     from .scene import build_scene
 
@@ -121,6 +119,14 @@ def prepare_scene(args, output, object_key):
         release_position = (
             rotation(background["quaternion_wxyz"]) @ release_position + background["translation"]
         ).tolist()
+    return model, config, manifest, release_position
+
+
+def prepare_scene(args, output, object_key):
+    import mujoco
+
+    model, config, manifest, release_position = build_offline_scene(args, object_key)
+    background = config.get("isaac_scene", {})
     if "asset_path" in background:
         background["asset_path"] = os.path.relpath(background["asset_path"], output)
     manifest["source"] = os.path.relpath(manifest["source"], output)
